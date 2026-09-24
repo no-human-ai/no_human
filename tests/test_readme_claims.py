@@ -1818,15 +1818,16 @@ def test_is_agent_session_is_real_but_absent_from_approve(security_doc):
 # be `path:line[-line]`-only, and two same-day incidents made the cost of that
 # concrete: task e5eb7b63 burned 4 attempts on its own edits shifting the line
 # it had just cited, and a doc-truth PR's `guard.py:2404-2408` citations had
-# re-rotted to ~2504-2510 within hours of an unrelated landing. Rewriting the
-# convention wholesale would be a style change this fix does not make — so a
-# SECOND citation form is accepted alongside the line form: `file.py:Symbol`
-# (a class, function, or module-level constant name, optionally followed by
-# `:line_start-line_end`). The symbol is what resolves that form, which is why
-# it survives the code moving; the line, when the row carries one, is checked
-# against where the cited token really is, and `reanchor_citations.py --apply`
-# rewrites it (issue #93). Every citation actually written in the three docs —
-# either form — is required to appear in the table below.
+# re-rotted to ~2504-2510 within hours of an unrelated landing. So citations
+# take the form `file.py:Symbol` (a class, function, or module-level constant
+# name, optionally followed by `:line_start-line_end`). The symbol is what
+# resolves it, which is why it survives the code moving; the line, when the
+# row carries one, is checked against where the cited token really is, and
+# `reanchor_citations.py --apply` rewrites it (issue #93). A line-only
+# `path:line[-line]` citation is rejected: it has no symbol, so nothing can
+# re-anchor it (issue #506). Every citation actually written in the docs —
+# either form — is required to appear in the table below, so a line-only one
+# cannot slip past unchecked.
 
 _LINE_CITATION_RE = re.compile(
     r"`((?:[\w./-]+\.(?:py|mjs|cjs))?:\d+(?:-\d+)?)`"
@@ -1838,44 +1839,58 @@ _LINE_CITATION_RE = re.compile(
 #: Reuses `_SYMBOL` (module scope, above) so both citation surfaces recognize
 #: the same identifier shape.
 _SYMBOL_CITATION_RE = re.compile(
-    r"`((?:[\w./-]+\.py)?:" + _SYMBOL + r"(?::\d+(?:-\d+)?)?)`"
+    r"`((?:[\w./-]+\.(?:py|mjs|cjs))?:" + _SYMBOL + r"(?::\d+(?:-\d+)?)?)`"
 )
 _LEGACY_LINE_SPEC_RE = re.compile(r"^\d+(?:-\d+)?$")
-_REGEX_FALLBACK_DEF_RE = re.compile(r"^(?:async\s+)?(?:def|class)\s+(\w+)\b")
-_REGEX_FALLBACK_ASSIGN_RE = re.compile(r"^(\w+)\s*(?::[^=]+)?=")
+_REGEX_FALLBACK_DEF_RE = re.compile(r"^[ \t]*(?:async\s+)?(?:def|class|function)\s+(\w+)\b")
+_REGEX_FALLBACK_ASSIGN_RE = re.compile(r"^[ \t]*(?:export\s+)?(?:const\s+|let\s+|var\s+)?([a-zA-Z0-9_.]+)\s*(?::[^=]+)?=")
 
 
 def _symbol_vicinity_by_regex(lines: list[str], symbol: str) -> list[str] | None:
-    """Degraded resolution used only when the source fails to parse as AST.
+    """Degraded resolution used when the source does not parse as Python —
+    a transient syntax error in a `.py` file, or any `.mjs`/`.cjs` file.
 
-    Column-0 `def`/`class`/assignment statements only — good enough to
-    survive a transient syntax error elsewhere in the file without turning
-    every citation in it RED. A nested `Class.method` symbol or a genuinely
-    missing name still returns None (the citation still fails) rather than
-    guessing at indentation.
+    A `def`/`class`/`function` line, or an assignment (`x =`, `const x =`,
+    `export const x =`, `module.exports =`), at any indentation. The first
+    line naming the symbol wins, and its block runs until the next such line
+    at the same or a shallower indent. A dotted `Outer.inner` symbol either
+    matches an assignment to that exact dotted target (`module.exports`) or
+    resolves `inner` INSIDE `Outer`'s block, recursively; if the tail is not
+    found there the result is None, so a bogus tail on a real outer name
+    (`configure.totallyBogus`) fails the citation instead of passing on the
+    outer name alone. A missing name also returns None.
     """
-    name = symbol.split(".", 1)[0]
+    head, dot, tail = symbol.partition(".")
     start = None
+    exact_dotted_assign = False
     for i, line in enumerate(lines):
         match = _REGEX_FALLBACK_DEF_RE.match(line)
-        if match and match.group(1) == name:
+        if match and match.group(1) == head:
             start = i
             break
         match = _REGEX_FALLBACK_ASSIGN_RE.match(line)
-        if match and match.group(1) == name:
-            return [line]
+        if match and match.group(1) in (head, symbol):
+            start = i
+            exact_dotted_assign = bool(dot) and match.group(1) == symbol
+            break
     if start is None:
         return None
     end = len(lines)
+    start_indent = len(lines[start]) - len(lines[start].lstrip())
     for j in range(start + 1, len(lines)):
-        if _REGEX_FALLBACK_DEF_RE.match(lines[j]) or _REGEX_FALLBACK_ASSIGN_RE.match(lines[j]):
+        if lines[j].strip() == "":
+            continue
+        indent = len(lines[j]) - len(lines[j].lstrip())
+        if indent <= start_indent and (_REGEX_FALLBACK_DEF_RE.match(lines[j]) or _REGEX_FALLBACK_ASSIGN_RE.match(lines[j])):
             end = j
             break
+    if dot and not exact_dotted_assign:
+        return _symbol_vicinity_by_regex(lines[start + 1:end], tail)
     return lines[start:end]
 
 
 def _symbol_vicinity_span(
-    source_text: str, symbol: str
+    source_text: str, symbol: str, *, path: str | Path | None = None
 ) -> tuple[int | None, list[str]] | None:
     """The lines making up *symbol*'s vicinity in *source_text*, and where they
     start.
@@ -1898,9 +1913,18 @@ def _symbol_vicinity_span(
     rather than failing every citation into that file; a symbol that is
     genuinely renamed or deleted still resolves to None either way.
 
+    *path*, when given, is the file the text came from. A non-`.py` source
+    (the `.mjs`/`.cjs` desktop files) is never Python, so it goes straight to
+    the regex resolver: no AST attempt and no warning, which would otherwise
+    fire on every JS citation and bury the one that means a `.py` file is
+    broken. Without *path* the source is treated as Python.
+
     Returns None when *symbol* is not found.
     """
     lines = source_text.splitlines()
+    if path is not None and Path(path).suffix != ".py":
+        vicinity = _symbol_vicinity_by_regex(lines, symbol)
+        return None if vicinity is None else (None, vicinity)
     try:
         tree = ast.parse(source_text)
     except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
@@ -1940,13 +1964,17 @@ def _symbol_vicinity_span(
     return node.lineno, lines[node.lineno - 1 : node.end_lineno]
 
 
-def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
+def _symbol_vicinity(
+    source_text: str, symbol: str, *, path: str | Path | None = None
+) -> list[str] | None:
     """The lines of *symbol*, for callers that do not need to know where from."""
-    span = _symbol_vicinity_span(source_text, symbol)
+    span = _symbol_vicinity_span(source_text, symbol, path=path)
     return None if span is None else span[1]
 
 
-def _symbol_first_line(source_text: str, symbol: str) -> int | None:
+def _symbol_first_line(
+    source_text: str, symbol: str, *, path: str | Path | None = None
+) -> int | None:
     """The 1-based line *symbol*'s vicinity starts on, or None if not found.
 
     The token check needs only the lines, but reporting a token found inside
@@ -1958,7 +1986,7 @@ def _symbol_first_line(source_text: str, symbol: str) -> int | None:
     matters when a file holds two identical bodies, where a content search
     would anchor every citation to whichever one comes first.
     """
-    span = _symbol_vicinity_span(source_text, symbol)
+    span = _symbol_vicinity_span(source_text, symbol, path=path)
     if span is None:
         return None
     start, vicinity = span
@@ -1971,7 +1999,9 @@ def _symbol_first_line(source_text: str, symbol: str) -> int | None:
     return None
 
 
-def _token_line_in_symbol(source_text: str, symbol: str, token: str) -> int | None:
+def _token_line_in_symbol(
+    source_text: str, symbol: str, token: str, *, path: str | Path | None = None
+) -> int | None:
     """The 1-based line where *token* appears inside *symbol*, or None.
 
     The token rather than the symbol is what a `symbol:line` row points at. Five
@@ -1980,10 +2010,10 @@ def _token_line_in_symbol(source_text: str, symbol: str, token: str) -> int | No
     function that starts on 515 — so anchoring on the definition would report
     those as 34 lines wrong when they are exactly right.
     """
-    start = _symbol_first_line(source_text, symbol)
+    start = _symbol_first_line(source_text, symbol, path=path)
     if start is None:
         return None
-    vicinity = _symbol_vicinity(source_text, symbol) or []
+    vicinity = _symbol_vicinity(source_text, symbol, path=path) or []
     for offset, line in enumerate(vicinity):
         if token in line:
             return start + offset
@@ -2018,30 +2048,32 @@ CITATION_TABLE = (
      '_refuse_agent_gate_act("approve")'),
     ("security.md", ":merge_stack_run:3176", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
-    ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
-    ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
-    ("security.md", "desktop/main.mjs:270", "desktop/main.mjs",
+    ("security.md", "updates.py:PYPI_JSON_URL:44", "updates.py", "PYPI_JSON_URL"),
+    ("security.md", "updates.py:DISABLE_ENV_VAR:57", "updates.py", "DISABLE_ENV_VAR"),
+    ("security.md", "desktop/main.mjs:checkForUpdates:270", "desktop/main.mjs",
      "async function checkForUpdates("),
-    ("security.md", "desktop/updater.mjs:116", "desktop/updater.mjs",
+    ("security.md", "desktop/updater.mjs:check:116", "desktop/updater.mjs",
      "autoUpdater.checkForUpdates()"),
-    ("security.md", "desktop/main.mjs:1141", "desktop/main.mjs", "checkForUpdates()"),
-    ("security.md", "desktop/electron-builder.config.cjs:457",
+    ("security.md", "desktop/main.mjs:gotLock:1141", "desktop/main.mjs",
+     "checkForUpdates().catch"),
+    ("security.md", "desktop/electron-builder.config.cjs:module.exports:457",
      "desktop/electron-builder.config.cjs", '"github"'),
-    ("security.md", "desktop/updater.mjs:68", "desktop/updater.mjs",
+    ("security.md", "desktop/updater.mjs:configure:68", "desktop/updater.mjs",
      "autoDownload = false"),
-    ("security.md", "ci/gitlab.py:403", "ci/gitlab.py", "pipeline"),
-    ("security.md", "ci/jenkins.py:301-330", "ci/jenkins.py", "_HTTP_MARKER"),
-    ("security.md", "ci/jenkins.py:154-169", "ci/jenkins.py", "buildWithParameters"),
-    ("security.md", "ci_gate/enrich.py:70-83", "ci_gate/enrich.py", "_HTTP_MARKER"),
-    ("security.md", "ci/circleci.py:169-180", "ci/circleci.py", "_latest_pipeline_for"),
-    ("security.md", "ci/circleci.py:182-186", "ci/circleci.py", "_create_pipeline"),
-    ("security.md", "context/teams.py:35", "context/teams.py", "GRAPH_SEARCH_URL"),
-    ("security.md", ":55-66", "context/teams.py", '"queryString": query'),
-    ("security.md", "context/teams.py:50-54", "context/teams.py",
-     "M365 Graph token not configured"),
-    ("security.md", "notify/slack.py:53", "notify/slack.py",
+    ("security.md", "ci/gitlab.py:GitLabCI._trigger:403", "ci/gitlab.py", "pipeline"),
+    ("security.md", "ci/jenkins.py:JenkinsCI._curl:306-335", "ci/jenkins.py", "def _curl("),
+    ("security.md", "ci/jenkins.py:JenkinsCI._run_once:154-169", "ci/jenkins.py",
+     'if self.mode == "trigger":'),
+    ("security.md", "ci_gate/enrich.py:_curl:70-88", "ci_gate/enrich.py", "def _curl("),
+    ("security.md", "ci/circleci.py:CircleCICI._latest_pipeline_for:169-180", "ci/circleci.py", "_latest_pipeline_for"),
+    ("security.md", "ci/circleci.py:CircleCICI._create_pipeline:182-186", "ci/circleci.py", "_create_pipeline"),
+    ("security.md", "context/teams.py:GraphTeamsClient:35", "context/teams.py", "GRAPH_SEARCH_URL"),
+    ("security.md", "context/teams.py:GraphTeamsClient.search:55-66", "context/teams.py", "body = {"),
+    ("security.md", "context/teams.py:GraphTeamsClient.search:50-54", "context/teams.py",
+     "if not self.token:"),
+    ("security.md", "notify/slack.py:SlackNotifier.notify:53", "notify/slack.py",
      "httpx.post(self.webhook_url"),
-    ("security.md", "notify/teams.py:205", "notify/teams.py",
+    ("security.md", "notify/teams.py:TeamsNotifier.notify:205", "notify/teams.py",
      "httpx.post(self.webhook_url"),
     ("security.md", "integrations/__init__.py:test_integration:1591",
      "integrations/__init__.py", "async def test_integration"),
@@ -2053,7 +2085,7 @@ CITATION_TABLE = (
      "_probe_github_ambient"),
     ("security.md", ":_probe_github_ambient:549", "integrations/__init__.py",
      "Only WHETHER a non-empty token exists"),
-    ("security.md", "brain/client.py:89-133", "brain/client.py",
+    ("security.md", "brain/client.py:_base:89-133", "brain/client.py",
      "cfg.control_plane_url"),
     ("security.md", "email/register.py:register_email", "email/register.py",
      "Fail-open: any transport problem"),
@@ -2061,12 +2093,12 @@ CITATION_TABLE = (
      "resend rejected the send"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
-    ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
+    ("security.md", "intake/mcp_bridge.py:BASE_URL:40", "intake/mcp_bridge.py",
      "127.0.0.1:8420"),
     ("security.md", "cli/commands.py:print_no_task_matching:86", "cli/commands.py",
      "no task matching"),
-    ("security.md", "history/extractor.py:65-72", "history/extractor.py",
-     "csrf_token"),
+    ("security.md", "history/extractor.py:LanguageServerClient.__init__:65-69", "history/extractor.py",
+     'host: str = "127.0.0.1"'),
     # docs/eval.md
     ("eval.md", "src/no_human/cli/commands.py:bench_run:8331",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
@@ -2079,7 +2111,7 @@ CITATION_TABLE = (
      "pass^{card.trials}"),
     ("eval.md", "northstar_card.py:render_northstar_md:1555-1559", "northstar_card.py",
      "Per-spec reliability"),
-    ("eval.md", "tests/test_bench_trials.py:272", "tests/test_bench_trials.py",
+    ("eval.md", "tests/test_bench_trials.py:test_a_single_trial_report_still_refuses_to_print_a_bare_percentage:272", "tests/test_bench_trials.py",
      '"pass^1" not in line'),
     ("eval.md", "northstar_card.py:NorthStarCard.spec_mean_success_rate:373",
      "northstar_card.py", "def spec_mean_success_rate("),
@@ -2102,7 +2134,7 @@ assert len(CITATION_TABLE) >= 20, (
 #: included — wherever it does; see
 #: `test_absent_tolerant_citation_still_checks_content_when_present` for the
 #: non-vacuity control that proves the skip cannot mask a wrong citation.
-_ABSENT_OK = frozenset({("security.md", "ci_gate/enrich.py:70-83")})
+_ABSENT_OK = frozenset({("security.md", "ci_gate/enrich.py:_curl:70-88")})
 
 _CITATION_DOC_PATHS = {
     "security.md": SECURITY_DOC,
@@ -2112,36 +2144,13 @@ _CITATION_DOC_PATHS = {
 }
 
 
-def _citation_source_lines(resolve_path: str, spec: str) -> list[str]:
-    """The literal text of the line(s) *spec* names inside *resolve_path*.
-
-    Empty list if the path does not resolve to exactly one file, or the file
-    is shorter than the citation claims — both read as "this citation no
-    longer points anywhere real" rather than raising.
-    """
-    hits = _resolve_source(resolve_path)
-    if len(hits) != 1:
-        return []
-    lines = hits[0].read_text(encoding="utf-8").splitlines()
-    if "-" in spec:
-        start_s, end_s = spec.split("-", 1)
-    else:
-        start_s = end_s = spec
-    start, end = int(start_s), int(end_s)
-    if start < 1 or end > len(lines):
-        return []
-    return lines[start - 1:end]
-
-
-#: How far a line citation may drift before it must be re-anchored. ±5 lines
-#: absorbs the ordinary edit above a citation (an added import, a docstring
-#: line, a small helper) that shifts everything below it in a hot file like
-#: orchestrator.py or db.py — measured: those shifts turned this suite red for
-#: unrelated in-flight tasks, and whole commits (886a575e2) exist only to
-#: re-anchor. It stays far smaller than a real relocation: a moved or
-#: reworded block leaves the token outside the window and still goes RED, and
-#: the token itself must still match EXACTLY as a substring — the window
-#: widens WHERE we look, never WHAT counts as a match.
+#: How far a `symbol:line` row's number may be off before `_check_citation`
+#: fails it rather than warning. ±5 lines absorbs the ordinary edit above a
+#: citation (an added import, a docstring line, a small helper) that shifts
+#: everything below it in a hot file like orchestrator.py or db.py. The symbol
+#: still locates the token exactly at any distance, so a row outside the window
+#: fails but `reanchor_citations.py --apply` can still rewrite it; the window
+#: decides only whether the suite goes red, never what counts as a match.
 _CITATION_DRIFT_WINDOW = 5
 
 def _cited_line(tail: str) -> int | None:
@@ -2158,65 +2167,6 @@ def _cited_line(tail: str) -> int | None:
     return int(start) if start.isdigit() else None
 
 
-def _locate_line_citation(
-    resolve_path: str, spec: str, token: str
-) -> tuple[str, int | None, str]:
-    """Where *token* actually lives relative to a legacy `path:line[-line]`
-    citation, tolerating small drift.
-
-    Returns ``(status, found_line, detail)``:
-
-    - ``"unresolved"`` — *resolve_path* does not resolve to exactly one file.
-      *found_line* is None; *detail* is empty. Callers must preserve today's
-      assertion text for this case — it is what `_ABSENT_OK` skips on.
-    - ``"exact"`` — *token* is on the cited line(s), unchanged. *found_line*
-      is the cited start line.
-    - ``"drifted"`` — *token* is not on the cited line(s) but IS within
-      `_CITATION_DRIFT_WINDOW` lines of them. *found_line* is the 1-based
-      line the match now starts on (the occurrence nearest the citation, so
-      a token that also appears far away does not win); *detail* is empty.
-    - ``"missing"`` — *token* is nowhere in the window. *found_line* is the
-      nearest occurrence anywhere else in the file (or None if it appears
-      nowhere at all); *detail* names that candidate, or says the content is
-      gone, for the diagnostic message.
-    """
-    hits = _resolve_source(resolve_path)
-    if len(hits) != 1:
-        return "unresolved", None, ""
-
-    lines = hits[0].read_text(encoding="utf-8").splitlines()
-    if "-" in spec:
-        start_s, end_s = spec.split("-", 1)
-    else:
-        start_s = end_s = spec
-    start, end = int(start_s), int(end_s)
-    span = max(end - start + 1, 1)
-
-    cited = lines[max(start - 1, 0):end] if start >= 1 else []
-    if start >= 1 and end <= len(lines) and token in "\n".join(cited):
-        return "exact", start, ""
-
-    lo = max(0, start - 1 - _CITATION_DRIFT_WINDOW)
-    hi = min(len(lines), end + _CITATION_DRIFT_WINDOW)
-    window_starts = sorted(
-        range(lo, max(hi - span + 1, lo)),
-        key=lambda i: abs(i - (start - 1)),
-    )
-    for i in window_starts:
-        candidate = "\n".join(lines[i:i + span])
-        if token in candidate:
-            return "drifted", i + 1, ""
-
-    # Missing: search the whole file for a diagnostic, but never treat a
-    # distant match as found — that would be exactly the widened match rule
-    # this helper must not implement.
-    for i in range(0, max(len(lines) - span + 1, 0)):
-        candidate = "\n".join(lines[i:i + span])
-        if token in candidate:
-            return "missing", i + 1, f"nearest candidate is line {i + 1}"
-    return "missing", None, f"not found anywhere in {hits[0]}"
-
-
 def _check_citation(
     doc: str,
     raw: str,
@@ -2229,54 +2179,25 @@ def _check_citation(
     non-vacuity control below can drive it directly with a wrong token.
 
     Dispatches on the shape of the spec after the (possibly inherited) path:
-    a bare line number or range (`58`, `507-533`) resolves against the real
-    file on disk, unchanged from before symbol citations existed. Anything
+    a bare line number or range (`58`, `507-533`) is rejected outright — it
+    has no symbol, so nothing can re-anchor it (issue #506). Anything
     else is a symbol, optionally followed by `:line[-line]`. Resolving the
     symbol is what makes that form survive an edit above it; the line, when
-    the row carries one, is then checked against the token's real line, on
-    the same warn-inside-the-window, fail-beyond-it terms a bare row gets.
+    the row carries one, is then checked against the token's real line:
+    a warning inside `_CITATION_DRIFT_WINDOW`, a failure beyond it.
 
     *source_text* lets a test inject file content directly instead of
     reading the resolved path from disk (used by the refactor-resilience and
-    AST-fallback tests below); it only applies to the symbol path — a legacy
-    line citation always reads the real file, since there is nothing to
-    fake a stale line range against.
+    AST-fallback tests below); it only applies to the symbol path — a
+    line-only citation is rejected before any source is read.
     """
     tail = raw.split(":", 1)[1]
     if _LEGACY_LINE_SPEC_RE.match(tail):
-        status, found_line, detail = _locate_line_citation(resolve_path, tail, token)
-        if status == "unresolved":
-            assert False, (
-                f"{doc} cites `{raw}` (resolved against {resolve_path!r}) but that "
-                f"does not resolve to a real line range — the code moved or the "
-                f"citation was never re-derived"
-            )
-        if status == "exact":
-            return
-        if status == "drifted":
-            warnings.warn(
-                f"{doc} cites `{raw}` for {token!r}, which has drifted from "
-                f"line {tail} to line {found_line} in {resolve_path} — still "
-                f"passing on a ±{_CITATION_DRIFT_WINDOW}-line tolerance; run "
-                f"`uv run python scripts/reanchor_citations.py --apply` to "
-                f"re-anchor it",
-                UserWarning,
-                stacklevel=2,
-            )
-            return
-        # status == "missing"
-        lines = _citation_source_lines(resolve_path, tail)
-        haystack = "\n".join(lines) if lines else "(citation is out of range)"
         assert False, (
-            f"{doc} cites `{raw}` for {token!r}, but the line(s) now read:\n"
-            f"  {haystack!r}\n"
-            f"and {token!r} was not found within "
-            f"±{_CITATION_DRIFT_WINDOW} lines of the citation either — "
-            f"{detail}; re-derive the citation from the current tree, or run "
-            f"`uv run python scripts/reanchor_citations.py --apply` if the "
-            f"nearest candidate above is the right target"
+            f"{doc} cites `{raw}` (resolved against {resolve_path!r}) which is a "
+            f"line-only citation. Symbol missing, cannot auto-reanchor until a "
+            f"symbol is supplied. Update it to include a symbol (e.g. `path:symbol:line`)."
         )
-
     # Symbol citation: strip the optional `:line[-line]` suffix so the symbol
     # can be resolved on its own. The line is checked further down, once the
     # symbol and the token have both been found.
@@ -2293,7 +2214,7 @@ def _check_citation(
         display_path = hits[0]
         text = hits[0].read_text(encoding="utf-8")
 
-    vicinity = _symbol_vicinity(text, symbol)
+    vicinity = _symbol_vicinity(text, symbol, path=resolve_path)
     assert vicinity is not None, (
         f"{doc} cites `{raw}` but {symbol!r} is not defined in {display_path} "
         f"— renamed or deleted, and the doc still sends readers to it"
@@ -2321,7 +2242,7 @@ def _check_citation(
     cited_line = None if source_text is not None else _cited_line(tail)
     if cited_line is None:
         return
-    actual = _token_line_in_symbol(text, symbol, token)
+    actual = _token_line_in_symbol(text, symbol, token, path=resolve_path)
     if actual is None or actual == cited_line:
         return
     message = (
@@ -2401,9 +2322,9 @@ def test_the_citation_table_covers_every_line_citation_in_the_four_docs():
     citation actually written in security.md/eval.md/KNOWN_ISSUES.md/WINDOWS.md must
     have a row in CITATION_TABLE — otherwise this guard only ever checks the
     citations someone remembered to add, which is exactly the blind spot
-    that let the originals rot. Legacy line-only citations remain legal —
-    migrating to a symbol anchor is encouraged for rot-prone hot files, not
-    required for every row.
+    that let the originals rot. A line-only citation written in a doc is
+    still collected here, so it cannot dodge the table — where
+    `_check_citation` then rejects it for having no symbol (issue #506).
     """
     table_by_doc: dict[str, set[str]] = {}
     for doc, raw, _, _ in CITATION_TABLE:
@@ -2459,7 +2380,9 @@ def test_symbol_citation_resilience():
     for doc, raw, resolve_path, token in CITATION_TABLE:
         tail = raw.split(":", 1)[1]
         if _LEGACY_LINE_SPEC_RE.match(tail):
-            continue  # legacy line citation — not part of this migration
+            continue  # line-only row: rejected by `_check_citation` instead
+        if (doc, raw) in _ABSENT_OK and not _resolve_source(resolve_path):
+            continue  # export-absent row
         hits = _resolve_source(resolve_path)
         assert len(hits) == 1, (
             f"{resolve_path} (from {doc} citation `{raw}`) does not resolve "
@@ -2531,108 +2454,114 @@ def test_symbol_citation_falls_back_to_regex_when_ast_fails():
         )
 
 
-def test_line_citation_tolerates_small_drift(tmp_path, monkeypatch):
-    """The defect this guard exists for: an unrelated edit prepends a few
-    lines above a citation's target in a hot file, and the cited line number
-    rots — but the CONTENT is still right there, a few lines down.
-
-    `_check_citation` must still pass (with a UserWarning naming the drift,
-    not silently), and `_locate_line_citation` must report exactly where the
-    content moved to.
-    """
-    original = "\n".join(f"line {i}" for i in range(1, 11)) + "\n"
-    target = tmp_path / "widget.py"
-    target.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(sys.modules[__name__], "_resolve_source", lambda path: [target])
-
-    status, found_line, _detail = _locate_line_citation("widget.py", "5", "line 5")
-    assert status == "exact" and found_line == 5
-
-    # Prepend 3 lines — everything below shifts down by 3, exactly the shape
-    # of the drift this window absorbs.
-    target.write_text("pad 1\npad 2\npad 3\n" + original, encoding="utf-8")
-
-    status, found_line, _detail = _locate_line_citation("widget.py", "5", "line 5")
-    assert status == "drifted", f"expected drifted, got {status!r}"
-    assert found_line == 8, f"expected the content at its new line 8, got {found_line}"
-
-    with pytest.warns(UserWarning, match="drifted"):
-        _check_citation("security.md", "widget.py:5", "widget.py", "line 5")
-
-
-def test_line_citation_fails_when_content_is_gone(tmp_path, monkeypatch):
-    """A citation must still go RED when its content is genuinely gone —
-    deleted, reworded, or moved far enough that drift tolerance is not the
-    honest answer. Both cases must name a nearest-candidate diagnostic
-    (never silently guess, never pass).
-    """
-    original = "\n".join(f"line {i}" for i in range(1, 11)) + "\n"
-    target = tmp_path / "widget.py"
-    target.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(sys.modules[__name__], "_resolve_source", lambda path: [target])
-
-    # Case 1: the token is deleted/reworded entirely — no candidate anywhere.
-    target.write_text(
-        "\n".join(f"line {i}" for i in range(1, 5))
-        + "\nsomething else entirely\n"
-        + "\n".join(f"line {i}" for i in range(6, 11))
-        + "\n",
-        encoding="utf-8",
+def test_regex_fallback_finds_an_indented_js_function():
+    """The `.mjs` desktop citations resolve through the regex fallback, and
+    their functions are nested (`  function configure() {` in updater.mjs), so
+    an indented `function`/`async function` must be found — a column-0-only,
+    `def`/`class`-only fallback would leave every such citation RED."""
+    source_text = (
+        "export function outer() {\n"
+        "  async function checkForUpdates({ manual = false } = {}) {\n"
+        "    return autoUpdater.checkForUpdates();\n"
+        "  }\n"
+        "}\n"
     )
-    status, found_line, detail = _locate_line_citation("widget.py", "5", "line 5")
-    assert status == "missing"
-    assert found_line is None
-    assert "not found anywhere" in detail
-    with pytest.raises(AssertionError, match="not found anywhere"):
-        _check_citation("security.md", "widget.py:5", "widget.py", "line 5")
-
-    # Case 2: the token moved 20 lines away — well outside the ±5 window —
-    # still fails, but the diagnostic names where it actually is.
-    padded = "\n".join(f"pad {i}" for i in range(1, 21)) + "\n" + original
-    target.write_text(padded, encoding="utf-8")
-    status, found_line, detail = _locate_line_citation("widget.py", "5", "line 5")
-    assert status == "missing"
-    assert found_line == 25, f"expected the real (out-of-window) line, got {found_line}"
-    assert "nearest candidate is line 25" in detail
-    with pytest.raises(AssertionError, match="nearest candidate is line 25"):
-        _check_citation("security.md", "widget.py:5", "widget.py", "line 5")
+    with pytest.warns(UserWarning, match="falling back to regex"):
+        vicinity = _symbol_vicinity(source_text, "checkForUpdates")
+    assert vicinity is not None, "indented async function not found"
+    assert "autoUpdater.checkForUpdates()" in "\n".join(vicinity)
 
 
-def test_drift_window_is_not_a_blanket_pass():
-    """The window is a small, deliberate tolerance, not a fuzzy-match
-    escape hatch — this pins both the bound itself and the fact that content
-    genuinely outside it is `"missing"`, not `"drifted"`.
-    """
-    assert _CITATION_DRIFT_WINDOW <= 10, (
-        "the drift window grew past a small tolerance for ordinary edits — "
-        "that starts to hide real relocations instead of catching them"
+def test_regex_fallback_rejects_a_dotted_symbol_whose_tail_does_not_resolve():
+    """Fail-closed: `configure.totallyBogus` must not pass on `configure`
+    alone. A nested function that DOES exist resolves (the positive control),
+    an exact dotted assignment target still does, and the exact row shape the
+    fail-open was found with, against the real `desktop/updater.mjs`, fails."""
+    source_text = (
+        "function outer() {\n"
+        "  function inner() {\n"
+        "    return 'inner token';\n"
+        "  }\n"
+        "}\n"
+        "module.exports = { a: 'exports token' };\n"
     )
+    with pytest.warns(UserWarning, match="falling back to regex"):
+        assert _symbol_vicinity(source_text, "outer.bogus") is None
+    with pytest.warns(UserWarning, match="falling back to regex"):
+        inner = _symbol_vicinity(source_text, "outer.inner")
+    assert inner is not None and "inner token" in "\n".join(inner)
+    with pytest.warns(UserWarning, match="falling back to regex"):
+        exports = _symbol_vicinity(source_text, "module.exports")
+    assert exports is not None and "exports token" in "\n".join(exports)
+
+    with pytest.raises(AssertionError, match="is not defined in"):
+        _check_citation(
+            "security.md", "desktop/updater.mjs:configure.totallyBogus:68",
+            "desktop/updater.mjs", "autoDownload = false",
+        )
 
 
-def test_every_line_citation_currently_resolves_exactly():
-    """The shipped docs are exactly anchored today, not merely within drift
-    tolerance — this is what gives `scripts/reanchor_citations.py --check`
-    something to enforce, and proves the new tolerance did not quietly
-    downgrade every legacy citation to "drifted".
+def test_every_citation_currently_resolves_exactly():
+    """The shipped docs are symbol-anchored and exactly anchored today, not
+    merely within drift tolerance — this is what gives
+    `scripts/reanchor_citations.py --check` something to enforce.
+
+    No row may be line-only (issue #506: a bare `path:N` has no symbol, so
+    nothing can re-anchor it), and every `symbol:line` row's line must be the
+    line its token is really on.
     """
+    line_only = [
+        f"{doc}: {raw}" for doc, raw, _, _ in CITATION_TABLE
+        if _LEGACY_LINE_SPEC_RE.match(raw.split(":", 1)[1])
+    ]
+    assert not line_only, (
+        "line-only citations have no symbol to re-anchor by — add one "
+        "(`path:symbol:line`):\n  " + "\n  ".join(line_only)
+    )
     checked = 0
     for doc, raw, resolve_path, token in CITATION_TABLE:
         tail = raw.split(":", 1)[1]
-        if not _LEGACY_LINE_SPEC_RE.match(tail):
-            continue  # symbol citation — not part of this guard
+        cited = _cited_line(tail)
+        if cited is None:
+            continue  # symbol-only row: no line to be exact about
         if (doc, raw) in _ABSENT_OK and not _resolve_source(resolve_path):
             continue  # export-absent row; covered by its own non-vacuity test
-        status, found_line, detail = _locate_line_citation(resolve_path, tail, token)
-        assert status == "exact", (
-            f"{doc} citation `{raw}` is {status!r} (found_line={found_line}, "
-            f"{detail}), not exactly anchored — the shipped docs should not "
-            f"be relying on drift tolerance"
+        hits = _resolve_source(resolve_path)
+        assert len(hits) == 1, f"`{raw}` resolves to {len(hits)} files, not one"
+        actual = _token_line_in_symbol(
+            hits[0].read_text(encoding="utf-8"), tail.rsplit(":", 1)[0], token,
+            path=hits[0])
+        assert actual == cited, (
+            f"{doc} citation `{raw}` has {token!r} on line {actual}, not "
+            f"{cited} — the shipped docs should not be relying on drift tolerance"
         )
         checked += 1
     assert checked >= 15, (
-        f"only {checked} legacy line citations were exercised — the ~22-row "
-        f"legacy-form slice of CITATION_TABLE should cover most of them"
+        f"only {checked} symbol:line citations were exercised — most of "
+        f"CITATION_TABLE's rows carry a line"
     )
+
+
+def test_line_only_citation_is_rejected_even_when_its_line_is_right(
+    tmp_path, monkeypatch
+):
+    """Issue #506: a line-only row is refused on its FORM, not its content.
+
+    The fixture puts the token exactly on the cited line, so a checker that
+    still accepted line-only rows would pass it; the new rule must fail it
+    with the message that says why it cannot be auto-fixed. The same content
+    cited with a symbol passes, so the refusal is about the missing symbol.
+    """
+    target = tmp_path / "widget.py"
+    target.write_text(
+        "def make_widget():\n    return 'line 2'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_resolve_source", lambda path: [target])
+
+    with pytest.raises(AssertionError, match="Symbol missing, cannot auto-reanchor"):
+        _check_citation("security.md", "widget.py:2", "widget.py", "line 2")
+
+    _check_citation("security.md", "widget.py:make_widget:2", "widget.py", "line 2")
 
 
 # --- KNOWN_ISSUES.md's traceback citations (not backtick-wrapped) ------------

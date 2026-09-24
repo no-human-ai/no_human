@@ -58,7 +58,7 @@ def test_squash_commit_author_and_committer_are_the_repo_identity(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-full-identity")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -91,7 +91,7 @@ def test_ambient_agent_identity_env_does_not_leak_into_the_merge_commit(land_env
     branch, head_sha = land_env.cut_branch("no-human/t-ambient-env")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -133,7 +133,7 @@ def test_task_branch_commits_keep_the_agent_identity(land_env):
 
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -173,7 +173,7 @@ def test_flat_merge_identity_config_keys_are_honored(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-flat-merge-identity")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -204,7 +204,7 @@ def test_approve_identity_still_wins_over_flat_merge_identity_keys(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-precedence")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -232,7 +232,7 @@ def test_no_repo_identity_preserves_current_behavior(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-no-identity-repro")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
 
