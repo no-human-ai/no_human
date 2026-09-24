@@ -2478,22 +2478,20 @@ FROZEN_FILE_LINES = {
     # additions. Measured on this tree with the scanner below: actual 3253,
     # which is what this entry froze at this point. Later entries would
     # move it further.
-    # 3253 -> PLACEHOLDER: `_salvage_committed_work` (called from `_run`'s
+    # 3253 -> 3384 (+131): `_salvage_committed_work` (called from `_run`'s
     # pool-crash handler when an attempt already has a `commit_sha` — resolves
     # the branch's real tip via `git rev-parse --verify` off-thread, records a
     # top-level `salvaged_work` context field and a `work_salvaged` event, and
     # closes the attempt with a `failure_reason` naming the branch+sha), plus
     # the `_resolve_branch_sha` helper it uses and the `PARTIAL_SUCCESS`
-    # terminal-status wiring in `_run` itself. Measured on this tree with the
-    # scanner below.
-    # PLACEHOLDER_A -> PLACEHOLDER_B: the final `set_status` crash write was
-    # split into two branches, each passing a LITERAL `TaskStatus.X` attribute
-    # instead of the `target_status` variable — `tests/test_resume_entry_registry.py`'s
-    # AST walk flags any `set_status` call whose target is a non-literal
-    # variable as an unregistered "re-entry site" (it might be claimable), and
-    # this terminal, one-way crash write is neither. Measured on this tree
-    # with the scanner below.
-    "core/scheduler.py": PLACEHOLDER,
+    # terminal-status wiring in `_run` itself; plus the final `set_status`
+    # crash write split into two branches, each passing a LITERAL
+    # `TaskStatus.X` attribute instead of the `target_status` variable —
+    # `tests/test_resume_entry_registry.py`'s AST walk flags any `set_status`
+    # call whose target is a non-literal variable as an unregistered
+    # "re-entry site" (it might be claimable), and this terminal, one-way
+    # crash write is neither. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3384,
 }
 
 
