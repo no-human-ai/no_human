@@ -175,12 +175,23 @@ def test_the_js_implementation_agrees_on_every_shared_case():
     node = shutil.which("node")
     assert node is not None, (
         "node is not on PATH, so the JS half of the lane conformance cannot be "
-        "checked and the anti-drift guarantee is void. Install Node (>= 18.1 for "
-        "`node --test`); this suite deliberately fails rather than skips, because "
+        "checked and the anti-drift guarantee is void. Install Node (>= 18.15, "
+        "which is where `--test-reporter` arrived; this repo declares no "
+        "`engines` floor and its CI pins 20 and 22); this suite deliberately "
+        "fails rather than skips, because "
         "a skip here is indistinguishable from a pass."
     )
     proc = subprocess.run(
-        [node, "--test", "src/laneConformance.test.mjs"],
+        # `--test-reporter=tap` is PINNED, not decorative: node 24 defaults
+        # to the SPEC reporter even when stdout is a pipe, whose epilogue is
+        # `ℹ pass 92` rather than TAP's `# pass 92`. `_tap_counter` below
+        # parses the TAP spelling, so an unpinned reporter made both counters
+        # unparseable and this guard failed closed on every machine with node
+        # >= 24 — main was red there while CI (node 20/22, still TAP by
+        # default) stayed green. Pinning the FORMAT keeps the parser as the
+        # single thing that has to be right, instead of teaching it whichever
+        # dialect the current node happens to default to.
+        [node, "--test", "--test-reporter=tap", "src/laneConformance.test.mjs"],
         cwd=WEB_DIR,
         capture_output=True,
         text=True,

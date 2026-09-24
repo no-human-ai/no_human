@@ -603,38 +603,57 @@ async def default_pr_state(ref: str) -> str:
 async def default_pr_checks(ref: str) -> list[dict]:
     """The PR head's CI checks, normalized: [{name, status, link, required}].
 
+    Thin wrapper over `default_pr_checks_and_required` — same signature,
+    return shape, and normalization vocabulary as before that function
+    existed; this is element 0 of its result. See that function for the
+    full contract (status vocabulary, the second `gh` call for
+    `required`, and every degradation path).
+    """
+    checks, _required_names = await default_pr_checks_and_required(ref)
+    return checks
+
+
+async def default_pr_checks_and_required(ref: str) -> tuple[list[dict], tuple[str, ...]]:
+    """`default_pr_checks`'s checks PLUS the required-context name set the
+    same lookup already resolved — no second `gh` invocation shape, no
+    extra round trip.
+
     status ∈ "fail" | "pass" | "pending". Sources both GitHub check-runs
     (conclusion) and commit statuses (state) from statusCheckRollup — the
     Jenkins integration on code.example.com reports plain commit statuses
     (e.g. continuous-integration/jenkins/pr-head), which `gh pr checks`
     renders but scripts often miss. Empty list = unknown/no checks.
 
-    ``required`` comes from a SECOND call, `gh pr checks --required`: the
-    generic `--json statusCheckRollup` export is a plain-field reflection
-    and cannot answer `isRequired` (GitHub's schema puts that field behind a
-    `pullRequestId` argument that `--json` field reflection does not
-    supply, so it is silently absent from every `statusCheckRollup` entry
-    regardless of branch protection). A failed/empty required-lookup leaves
-    every entry `required=False` — "no required-ness data", which
-    `ci_rollup.aggregate_rollup` treats as "evaluate every check", not
-    "confirmed zero required checks".
+    ``required`` (per check, and the returned name set) comes from a SECOND
+    call, `gh pr checks --required`: the generic `--json statusCheckRollup`
+    export is a plain-field reflection and cannot answer `isRequired`
+    (GitHub's schema puts that field behind a `pullRequestId` argument that
+    `--json` field reflection does not supply, so it is silently absent
+    from every `statusCheckRollup` entry regardless of branch protection).
+    A failed/empty required-lookup leaves every entry `required=False` AND
+    the returned name set empty — "no required-ness data", which
+    `ci_rollup.aggregate_rollup` treats as "evaluate every check, and never
+    report a required context as missing", not "confirmed zero required
+    checks". A NON-empty name set is therefore positive evidence the
+    lookup succeeded — the only signal `aggregate_rollup` trusts to compute
+    `missing_required`.
     """
     if not shutil.which("gh"):
-        return []
+        return [], ()
     target = _gh_repo_and_number(ref)
     if not target:
-        return []
+        return [], ()
     repo_arg, num_str = target
     out = await _run_cli([
         "gh", "pr", "view", num_str, "--repo", repo_arg,
         "--json", "statusCheckRollup",
     ])
     if not out:
-        return []
+        return [], ()
     try:
         rollup = json.loads(out).get("statusCheckRollup") or []
     except json.JSONDecodeError:
-        return []
+        return [], ()
     required_names = await _required_check_names(repo_arg, num_str)
     checks: list[dict] = []
     for c in rollup:
@@ -651,7 +670,7 @@ async def default_pr_checks(ref: str) -> list[dict]:
             "link": c.get("targetUrl") or c.get("detailsUrl") or "",
             "required": name in required_names,
         })
-    return checks
+    return checks, tuple(sorted(required_names))
 
 
 async def _required_check_names(repo_arg: str, num_str: str) -> set[str]:

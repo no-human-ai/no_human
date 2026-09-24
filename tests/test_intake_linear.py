@@ -290,6 +290,29 @@ def test_normalize_maps_the_issue_onto_a_task(key):
     assert lin["team"] == "ENG"
 
 
+def test_normalize_extracts_plain_bullets_from_acceptance_criteria(key):
+    task = LinearAdapter(_cfg()).normalize(_issue(
+        description="## Acceptance criteria\n- returns 'hi, X'\n- has a test"))
+    assert task.acceptance_criteria == ["returns 'hi, X'", "has a test"]
+
+
+def test_normalize_warns_for_an_empty_acceptance_criteria_heading(key, caplog):
+    with caplog.at_level(logging.WARNING, logger="no_human.intake.criteria"):
+        task = LinearAdapter(_cfg()).normalize(_issue(
+            identifier="ENG-11", description="## Acceptance criteria\nText only"))
+    assert task.acceptance_criteria == []
+    assert "Linear issue ENG-11" in caplog.text
+    assert "--criteria" in caplog.text
+
+
+def test_normalize_leaves_missing_criteria_silent(key, caplog):
+    with caplog.at_level(logging.WARNING, logger="no_human.intake.criteria"):
+        task = LinearAdapter(_cfg()).normalize(_issue(
+            identifier="ENG-12", description="Background only"))
+    assert task.acceptance_criteria == []
+    assert not caplog.records
+
+
 def test_normalize_keeps_the_node_uuid_because_mutations_need_it(key):
     """external_id is "ENG-1" but every mutation takes the UUID. Losing it
     would make write-back impossible (or, worse, guess)."""

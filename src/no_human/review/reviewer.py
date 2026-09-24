@@ -47,6 +47,12 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
+from .diff_coverage import (
+    DiffCoverageError,
+    InspectionTracker,
+    budget_diff,
+    coverage_rejection_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +139,18 @@ _TRIVIAL_REVIEW_TURNS = 6
 # Constraint #4: retry only on infra failures, and boundedly. A reviewer that
 # never reaches a verdict is an infra failure, not a finding.
 _REVIEW_INFRA_RETRIES = 1
+# Fed into round N+1's prompt (appended, never mutating round N's) when round
+# N's `reason` was a coverage rejection — see the call site in `_agent_review`
+# for why only this no-verdict reason gets feedback.
+_COVERAGE_RETRY_NOTE = (
+    "\n\nPREVIOUS ROUND REJECTED — THE VERDICT WAS DISCARDED, NOT COUNTED.\n"
+    "{reason}\n"
+    "These files were CUT from the diff above, so the patch you were shown "
+    "does not contain their changes. Before reaching any verdict this round, "
+    "read each path listed above with a read/search tool and cite what you "
+    "found. A verdict over a file you did not open is discarded again and the "
+    "task escalates to a human unreviewed.\n"
+)
 # On a *timeout* (hung/saturated reviewer, not turn-starved) the retry's window
 # is halved down to this floor rather than granted another full one — a hang
 # won't clear in a second full window, it just doubles how long a task sits
@@ -446,7 +464,7 @@ class ReviewDecision:
         return d
 
 
-def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int]:
+def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int, list[str]]:
     """Return (truncated_diff, total_length).
 
     `--no-ext-diff --no-textconv` are a SECURITY boundary, not formatting:
@@ -466,7 +484,45 @@ def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> t
         env=_git_subprocess_env("diff"),
     )
     raw = proc.stdout or ""
-    return raw[:_DIFF_CAP], len(raw)
+    try:
+        rendered, cut_paths = budget_diff(raw, _DIFF_CAP)
+    except DiffCoverageError as exc:
+        raise ReviewerUnavailable(f"review diff coverage unavailable: {exc}") from exc
+    return rendered, len(raw), cut_paths
+
+
+def _bounded_override_diff(raw: str) -> tuple[str, int]:
+    """Bound a caller-supplied diff at `_DIFF_CAP` without hiding a file.
+
+    DISCLOSURE, not inspection — deliberately different from `_git_diff`.
+    The refs path can require the reviewer to open every cut path, because
+    it has the refs and a multi-turn tool-enabled session. This path has
+    neither: the caller supplied the diff, `_fast_review` runs single-turn
+    with no tools, and `repo_path` is not guaranteed to hold the reviewed
+    content at all (`_root_mismatch_for_diff_override` exists because of
+    that). So the ledger here TELLS the reviewer which files were cut and
+    asks it to scope its verdict; it does not demand reads it cannot make,
+    and `review()` passes no `required_inspections` on this path — the
+    inspection guard would reject every verdict.
+
+    Never raises. A hard stop is the wrong answer for a diff that merely
+    got big (issue #437 closed a silent truncation, not a gate), so an
+    unsplittable diff falls back to a prefix cut plus an explicit note
+    saying so — the one thing that must not happen is a silent cut.
+    """
+    if len(raw) <= _DIFF_CAP:
+        return raw, len(raw)
+    try:
+        rendered, _cut = budget_diff(raw, _DIFF_CAP, inspection_required=False)
+        return rendered, len(raw)
+    except DiffCoverageError as exc:
+        dropped = len(raw) - _DIFF_CAP
+        note = (
+            f"\n[...diff truncated: {dropped:,} more chars not shown, and the "
+            f"per-file coverage ledger could not be built ({exc}). This cut is "
+            "unattributed to specific files — judge only what is shown.]\n"
+        )
+        return raw[:_DIFF_CAP - len(note)] + note, len(raw)
 
 
 def _changed_paths(repo_path: Path, before: str, after: str,
@@ -593,7 +649,7 @@ def _linked_repos_review_section(linked: list[tuple[Path, str]]) -> str:
         "you may also read any linked repo by absolute path with your tools.\n"
     ]
     for lpath, lbefore in linked:
-        diff, total = _git_diff(lpath, lbefore, "HEAD")
+        diff, total, _cut_paths = _git_diff(lpath, lbefore, "HEAD")
         if not diff.strip():
             parts.append(
                 f"\n--- linked repo {lpath} — NO CHANGES in this repo ---\n"
@@ -2648,7 +2704,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref="HEAD", verify_citations=False)
 
         # Gate mode (default): original adversarial review.
-        full_files, omitted_files = "", []
+        full_files, omitted_files, cut_paths = "", [], []
         lint_evidence = ""
         wiring_evidence = ""
         type_evidence = ""
@@ -2662,12 +2718,12 @@ class AdversarialReviewer:
             if not diff_override else ""
         )
         if diff_override:
-            # Caller supplied the diff; there are no refs to read files from, and
-            # _fast_review runs single-turn with no tools.
-            diff = diff_override[:_DIFF_CAP]
-            diff_total_len = len(diff_override)
+            # DISCLOSURE, not inspection — the override path has no refs and
+            # no tools, so it names what it cut instead of demanding reads.
+            # See `_bounded_override_diff` for why this differs from _git_diff.
+            diff, diff_total_len = _bounded_override_diff(diff_override)
         else:
-            diff, diff_total_len = _git_diff(repo_path, before_ref, after_ref)
+            diff, diff_total_len, cut_paths = _git_diff(repo_path, before_ref, after_ref)
             full_files, omitted_files = _full_file_context(
                 repo_path, before_ref, after_ref,
             )
@@ -2755,6 +2811,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref=before_ref,
                 max_turns=self._tier_review_turns(task),
                 extra_repos=linked_repos or None,
+                required_inspections=cut_paths,
             )
 
         # Bounded refute pass (gate path only — see the module-level comment
@@ -2945,6 +3002,7 @@ class AdversarialReviewer:
         *, max_turns: int = _REVIEW_TURNS, timeout: int | None = None,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> ReviewDecision:
         """Multi-turn review — model can explore the repo with read-only tools.
 
@@ -2957,7 +3015,10 @@ class AdversarialReviewer:
 
         So: retry once with a larger budget (constraint #4 — infra-only, bounded),
         then raise :class:`ReviewerUnavailable` so the task escalates honestly.
-        No path here ever turns a missing verdict into a pass.
+        No path here ever turns a missing verdict into a pass. The retry prompt
+        is the SAME every round with one exception: a coverage rejection (see
+        the branch below, after `last_reason` is set) appends its own text —
+        the only no-verdict reason a reviewer can act on differently.
 
         A round that ERRORED is a round with no verdict (see ``_review_once``),
         which means a finding made in the last turn before truncation is
@@ -3010,12 +3071,17 @@ class AdversarialReviewer:
         # were billed — `_carry_usage` folds their spend onto whatever leaves
         # this method so the attempt row shows what the gate really cost.
         discarded: list[AgentResult] = []
+        # The prompt actually sent this round. Reset to `prompt` every
+        # iteration (not accumulated) so feedback never stacks across rounds —
+        # see the coverage-rejection branch below for why.
+        round_prompt = prompt
         for round_n in range(_REVIEW_INFRA_RETRIES + 1):
             budget = max_turns * (2 ** round_n)
             decision, reason, result = await self._review_once(
-                prompt, repo_path, max_turns=budget, timeout=round_timeout,
+                round_prompt, repo_path, max_turns=budget, timeout=round_timeout,
                 before_ref=before_ref, verify_citations=verify_citations,
                 extra_repos=extra_repos,
+                required_inspections=required_inspections,
             )
             if decision is not None:
                 # `result`'s own usage is already stamped on `decision`.
@@ -3031,6 +3097,35 @@ class AdversarialReviewer:
             # a missing verdict into a pass; only escalates a hang sooner.
             if reason.startswith("timed out"):
                 round_timeout = max(_REVIEW_MIN_RETRY_TIMEOUT, round_timeout // 2)
+            # A coverage rejection is the only no-verdict reason that is
+            # DETERMINISTIC IN THE REVIEWER'S OWN CHOICES and actionable: the
+            # reviewer that decided those cut paths were not worth opening
+            # decides that again on an identical prompt, now billed at double
+            # the turn budget and (since "reviewer reached a verdict without
+            # referencing..." does not start with "timed out") a FULL timeout
+            # window too — the most expensive no-verdict path there is (5
+            # escalated tasks, 83.2M raw / 18.4M weighted tokens reaching no
+            # verdict, task 68e66468 alone at 34.6M raw / 18 cut paths). So
+            # round N+1's prompt carries round N's rejection verbatim plus an
+            # instruction to open each named path — reset from `prompt`, not
+            # accumulated, so only the MOST RECENT rejection is fed forward: a
+            # path referenced in round N is no longer missing, and re-demanding
+            # it would send the reviewer chasing a path the guard is already
+            # satisfied on. The other three no-verdict reasons — timed out
+            # (hung/saturated, already handled by the halving above), no
+            # REVIEW_JSON block / bad stop reason (malformed or truncated
+            # output), errored session (dead transport / turn exhaustion) — are
+            # resource/format failures the reviewer cannot act on differently;
+            # the doubled turn budget already granted below IS the whole
+            # remedy for those, and appending text would only add noise and
+            # shrink the budget the retry exists to grant. This never relaxes
+            # the guard: `InspectionTracker.rejection()` is untouched, and a
+            # coverage rejection on the FINAL round still falls through to
+            # `ReviewerUnavailable` below, never a pass.
+            round_prompt = prompt
+            missing = coverage_rejection_paths(reason)
+            if missing:
+                round_prompt = prompt + _COVERAGE_RETRY_NOTE.format(reason=reason)
             log.warning(
                 "reviewer reached no verdict (%s) on round %d/%d (budget %d turns)",
                 reason, round_n + 1, _REVIEW_INFRA_RETRIES + 1, budget,
@@ -3180,6 +3275,7 @@ class AdversarialReviewer:
         self, prompt: str, repo_path: Path, *, max_turns: int, timeout: int,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> tuple[ReviewDecision | None, str, AgentResult | None]:
         """One reviewer session.
 
@@ -3192,11 +3288,13 @@ class AdversarialReviewer:
         decision it returns.
         """
         all_text_parts: list[str] = []
+        tracker = InspectionTracker(required_inspections)
         original_on_event = self._on_event
 
         def _capture_event(event):
             if event.text:
                 all_text_parts.append(event.text)
+            tracker.note_event(event)
             if original_on_event:
                 original_on_event(event)
 
@@ -3269,4 +3367,7 @@ class AdversarialReviewer:
         # Default None, not 0 — an absent split must stay distinguishable from
         # a measured zero all the way to `attempts.review_output_tokens`.
         decision.output_tokens = getattr(result, "output_tokens", None)
+        rejection = tracker.rejection()
+        if rejection:
+            return None, rejection, result
         return decision, "", result

@@ -1,0 +1,11 @@
+> desktop@0.2.3 dist:win
+> electron-builder --win --publish never
+
+  • electron-builder  version=26.0.12 os=10.0.26100
+  • loaded configuration  file=electron-builder.config.cjs
+  • downloading   url=https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z duration=1.2s
+  • downloaded    label=nsis-3.0.4.1.7z progress=100%
+  • downloading   url=https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-resources-3.4.1/nsis-resources-3.4.1.7z duration=0.9s
+  • downloaded    label=nsis-resources-3.4.1.7z progress=100%
+  • building        target=nsis file=dist\NoHuman-Setup-0.2.3.exe archs=x64
+  ⨯ Response code 504 (Gateway Time-out)  url=https://github.com/electron-userland/electron-builder-binaries/releases/download/vswhere-2.6.7/vswhere.exe
