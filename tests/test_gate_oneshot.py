@@ -350,14 +350,19 @@ def _repo_fingerprint(repo):
 # (oneshot.py) and the tamper guard it calls (testing/runner.py) are allowed
 # to issue against the user's own checkout — enumerated by reading every
 # `["git", ...]` construction reachable from `run_gate` (oneshot.py's `_git`/
-# `_rev_parse`/`_merge_base`/`_diff`/`_uncommitted_paths`/
-# `_origin_owner_repo`/`_resolve_pr_mode`, `GitRepo.current_branch`/
-# `head_sha`/`default_branch`, and `runner.py`'s `_git_show`/`_git_files`).
-# `clone`/`checkout` are deliberately absent here: they exist only inside
-# `_materialized_head`'s throwaway temp clone and are checked separately.
+# `_rev_parse`/`_merge_base`/`_diff`/`_changed_files`/`_uncommitted_paths`/
+# `_origin_owner_repo`/`_resolve_pr_mode`/`_ls_remote_exact`,
+# `GitRepo.current_branch`/`head_sha`/`default_branch`, and `runner.py`'s
+# `_git_show`/`_git_files`). `clone`/`checkout` are deliberately absent
+# here: they exist only inside `_materialized_head`'s throwaway temp clone
+# and are checked separately. `ls-remote` is a pure, stateless network read
+# (no local write at all) — `_resolve_pr_mode` now uses it, via
+# `_ls_remote_exact`, in place of trusting a `fetch`-then-read-FETCH_HEAD
+# round trip, to close the race where a concurrent gate's `fetch` into the
+# same repo's single FETCH_HEAD file could otherwise be read back instead.
 _READ_ONLY_GIT_VERBS = {
     "rev-parse", "merge-base", "diff", "status", "config", "fetch",
-    "symbolic-ref", "remote", "ls-tree", "show",
+    "symbolic-ref", "remote", "ls-tree", "show", "ls-remote",
 }
 
 
@@ -581,10 +586,19 @@ def test_not_a_git_repo_refuses_by_name(tmp_path, monkeypatch):
 
 
 def test_pr_fetch_failure_refuses_by_name(tmp_path, monkeypatch):
+    """PR #7 was never pushed to `origin`, so its ref doesn't exist there.
+    `_resolve_pr_mode` now resolves the head via `ls-remote` BEFORE ever
+    attempting a `fetch` (see the FETCH_HEAD-race comment in
+    `_resolve_pr_mode`), so a nonexistent ref is now caught at that earlier
+    resolution step, with its own message, rather than surfacing as a
+    `git fetch` failure — same refusal, same PR number named, no network
+    fetch of a ref that was never going to exist attempted at all."""
     repo, _bare = _make_repo_with_github_origin(tmp_path)
     _ok_credential(monkeypatch)
     import asyncio
-    with pytest.raises(GateUnavailable, match="could not fetch pull request #7"):
+    with pytest.raises(
+        GateUnavailable, match="could not resolve pull request #7's head",
+    ):
         asyncio.run(run_gate(
             repo, pr_url="https://github.com/acme/widgets/pull/7",
         ))
@@ -729,6 +743,162 @@ def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
     _install_fail_closed_git_spy(monkeypatch, real_repo=repo)
     import asyncio
     asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/13"))
+
+
+# --------------------------------------------------------------------------- #
+# 8b. concurrent gates must not cross-resolve each other's PR head            #
+# --------------------------------------------------------------------------- #
+
+def test_concurrent_gates_each_resolve_their_own_pr_head_not_a_racing_fetch_head(
+    tmp_path, monkeypatch,
+):
+    """Deterministic reproduction of the FETCH_HEAD race: two `nh gate --pr`
+    runs sharing one checkout each `git fetch origin refs/pull/<n>/head`
+    into that checkout's single, per-repository FETCH_HEAD file. The OLD
+    `_resolve_pr_mode` then read FETCH_HEAD straight back, so whichever
+    gate's read landed after the OTHER gate's fetch got the OTHER PR's head
+    — a crossed resolution, with no threads or timing involved: it is a
+    deterministic function of fetch/read ORDER, which this test reproduces
+    directly by injecting PR #583's fetch synchronously, at the exact point
+    the real race would land it, in the middle of resolving PR #547.
+
+    From `GitRepo(repo)`, this drives `oneshot._resolve_pr_mode` directly
+    (rather than the full `run_gate`) so the assertion is squarely on head
+    resolution — the exact step the fix must close the failure mode at,
+    per the "fix at resolution, not by locking" requirement.
+    """
+    from no_human.vcs.git import GitRepo
+
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+
+    pr_547_src = _push_pr_ref(bare, tmp_path / "pr_547_src", 547)
+    (pr_547_src / "a_change.txt").write_text("pr 547\n")
+    _git(pr_547_src, "add", "a_change.txt")
+    _git(pr_547_src, "commit", "-m", "pr 547 change")
+    _git(pr_547_src, "push", "origin", "HEAD:refs/pull/547/head")
+    pr_547_head = _git_out(pr_547_src, "rev-parse", "HEAD")
+
+    pr_583_src = _push_pr_ref(bare, tmp_path / "pr_583_src", 583)
+    (pr_583_src / "b_change.txt").write_text("pr 583\n")
+    _git(pr_583_src, "add", "b_change.txt")
+    _git(pr_583_src, "commit", "-m", "pr 583 change")
+    _git(pr_583_src, "push", "origin", "HEAD:refs/pull/583/head")
+    pr_583_head = _git_out(pr_583_src, "rev-parse", "HEAD")
+
+    assert pr_547_head != pr_583_head
+
+    real_git = oneshot._git
+    injected = {"done": False}
+
+    def _racing_git(repo_path, *args):
+        result = real_git(repo_path, *args)
+        # Immediately after gate A's own fetch of PR 547's ref, simulate a
+        # second concurrent gate (reviewing PR 583, against the SAME shared
+        # `repo_path`) landing its own fetch into the same repo's single
+        # FETCH_HEAD file — the exact logical moment the real race occurs.
+        if (
+            not injected["done"]
+            and args[:2] == ("fetch", "origin")
+            and args[2:] == ("refs/pull/547/head",)
+        ):
+            injected["done"] = True
+            real_git(repo_path, "fetch", "origin", "refs/pull/583/head")
+        return result
+
+    monkeypatch.setattr(oneshot, "_git", _racing_git)
+
+    repo_obj = GitRepo(repo)
+    _merge_base, head, _base_ref, _comparison, _uncommitted = oneshot._resolve_pr_mode(
+        repo_obj, repo, "https://github.com/acme/widgets/pull/547", None,
+    )
+
+    assert injected["done"], "the injected competing fetch never ran"
+    assert head == pr_547_head, (
+        f"gate A resolved to {head[:7]}, but was asked about PR #547 "
+        f"(real head {pr_547_head[:7]}) — a racing fetch of PR #583 "
+        f"(head {pr_583_head[:7]}) crossed into gate A's resolution"
+    )
+
+
+def test_a_crossed_head_resolution_produces_a_self_contradictory_verdict(
+    tmp_path, monkeypatch,
+):
+    """Even if a future regression reintroduces a crossed head resolution
+    (e.g. by reverting to reading FETCH_HEAD), the verdict must not
+    silently attribute the wrong PR's diff to the named PR: the emitted
+    `changed_files` must come from the SAME head the review actually used,
+    so a crossed resolution is visible on the verdict's own face — citing
+    files that don't belong to the named PR — rather than merely being
+    checkable via an internal `head` field a caller has to know to inspect.
+    """
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+
+    pr_547_src = _push_pr_ref(bare, tmp_path / "pr_547_src2", 547)
+    (pr_547_src / "a_change.txt").write_text("pr 547\n")
+    _git(pr_547_src, "add", "a_change.txt")
+    _git(pr_547_src, "commit", "-m", "pr 547 change")
+    _git(pr_547_src, "push", "origin", "HEAD:refs/pull/547/head")
+
+    pr_583_src = _push_pr_ref(bare, tmp_path / "pr_583_src2", 583)
+    (pr_583_src / "b_change.txt").write_text("pr 583\n")
+    _git(pr_583_src, "add", "b_change.txt")
+    _git(pr_583_src, "commit", "-m", "pr 583 change")
+    _git(pr_583_src, "push", "origin", "HEAD:refs/pull/583/head")
+    pr_583_head = _git_out(pr_583_src, "rev-parse", "HEAD")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    real_ls_remote_exact = oneshot._ls_remote_exact
+
+    def _crossed_ls_remote_exact(repo_path, ref, remote="origin"):
+        if ref == "refs/pull/547/head":
+            # Simulate a resolution that got crossed onto PR #583's head —
+            # what a regression of the fix (or a surviving FETCH_HEAD race)
+            # would produce.
+            return real_ls_remote_exact(repo_path, "refs/pull/583/head", remote)
+        return real_ls_remote_exact(repo_path, ref, remote)
+
+    monkeypatch.setattr(oneshot, "_ls_remote_exact", _crossed_ls_remote_exact)
+
+    # The crossed resolution above only redirects the answer `head` takes
+    # on; it does not, by itself, make PR #583's commit object reachable
+    # in the local object store (the code still `fetch`es the literal
+    # `refs/pull/547/head` refspec). A real crossed FETCH_HEAD race would
+    # have fetched the OTHER PR's objects too (that other gate's own fetch
+    # is what put them there), so bring PR #583's objects in the same way
+    # here — otherwise the post-fetch `_rev_parse(head)` sanity check would
+    # itself (correctly) refuse, masking the very bug this test exists to
+    # catch.
+    real_git = oneshot._git
+
+    def _also_fetch_the_crossed_pr(repo_path, *args):
+        result = real_git(repo_path, *args)
+        if args[:2] == ("fetch", "origin") and args[2:] == ("refs/pull/547/head",):
+            real_git(repo_path, "fetch", "origin", "refs/pull/583/head")
+        return result
+
+    monkeypatch.setattr(oneshot, "_git", _also_fetch_the_crossed_pr)
+
+    import asyncio
+    result = asyncio.run(run_gate(
+        repo, pr_url="https://github.com/acme/widgets/pull/547",
+    ))
+
+    assert "547" in result.comparison, (
+        "the verdict must still name the PR it was asked to review"
+    )
+    assert pr_583_head[:7] in result.comparison, (
+        "sanity check: the crossed resolution really did take hold"
+    )
+    assert "b_change.txt" in result.changed_files, (
+        "the crossed resolution's real files must show up in the verdict"
+    )
+    assert "a_change.txt" not in result.changed_files, (
+        "PR #547's own file must NOT appear: this proves the verdict is "
+        "self-contradictory on its face — it names #547 but its own file "
+        "list is #583's, not merely that some internal head field is wrong"
+    )
 
 
 # --------------------------------------------------------------------------- #

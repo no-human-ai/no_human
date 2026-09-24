@@ -19,14 +19,17 @@ own checkout is read-only plumbing — `rev-parse`, `merge-base`, `diff`,
 a `--pr` URL names this checkout's own repository — deliberately not
 `remote get-url`, which would apply any `insteadOf` rewrite instead of
 reporting the repo's actual declared origin; see `_origin_owner_repo`), and,
-in PR mode, a single additive `fetch` of the PR's refs (which writes objects
-and `FETCH_HEAD` but creates no branch and moves no ref the user owns). No
-network call is made by default: `default_branch(local_only=True)` reads
-only the local `refs/remotes/origin/HEAD`, never `git remote show origin`
-(that fallback does real network I/O and, offline, hangs instead of
-answering) — a checkout where that local ref was never recorded refuses by
-name and points at `--base` rather than guessing over the network. Every git
-call that touches the network (PR mode's `fetch`) runs with
+in PR mode, a single `ls-remote` of the PR's ref (a pure network read, no
+local write at all — see `_ls_remote_exact` and `_resolve_pr_mode`'s
+FETCH_HEAD-race comment) followed by an additive `fetch` of that same ref
+(which writes objects and `FETCH_HEAD` but creates no branch and moves no
+ref the user owns). No network call is made by default:
+`default_branch(local_only=True)` reads only the local
+`refs/remotes/origin/HEAD`, never `git remote show origin` (that fallback
+does real network I/O and, offline, hangs instead of answering) — a checkout
+where that local ref was never recorded refuses by name and points at
+`--base` rather than guessing over the network. Every git call that touches
+the network (PR mode's `ls-remote` and `fetch`) runs with
 `GIT_TERMINAL_PROMPT=0` and a no-op askpass so a private repo the caller
 lacks credentials for fails fast instead of blocking on a credential prompt
 forever (see `_no_prompt_env`). The tamper guard this module calls
@@ -57,7 +60,7 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -138,6 +141,14 @@ class GateResult:
     reviewer_backend: str = "claude"
     reviewer_model: str = ""
     reviewer_backend_is_default: bool = True
+    # The changed-file paths for `before_ref..after_ref` — the SAME two refs
+    # this run resolved and reviewed, read via `_changed_files` off of
+    # those exact shas, never a second, independent lookup by PR number.
+    # A crossed head resolution (see `_resolve_pr_mode`'s FETCH_HEAD-race
+    # comment) would then show up here as files absent from the named PR's
+    # real file list, making the verdict self-contradictory on its face
+    # instead of silently citing the wrong PR's diff as if it were correct.
+    changed_files: list[str] = field(default_factory=list)
 
 
 def _no_prompt_env() -> dict[str, str]:
@@ -204,6 +215,44 @@ def _rev_parse(repo_path: Path, ref: str) -> str | None:
     return sha if proc.returncode == 0 and sha else None
 
 
+def _ls_remote_exact(repo_path: Path, ref: str, remote: str = "origin") -> str | None:
+    """The sha `remote` currently advertises for `ref`, read live over the
+    network — never read back from any local, per-repo mutable state.
+
+    This is the fix for the FETCH_HEAD race documented on `_resolve_pr_mode`:
+    `git ls-remote <remote> <ref>` returns the answer directly in this call's
+    own stdout, with no shared on-disk slot a second, concurrent `git fetch`
+    (from another gate run against the same checkout) could overwrite before
+    this call reads it back. `ls-remote` matches on *tail* path components,
+    so a decoy ref that merely ends in `ref` could otherwise surface too —
+    every returned line is checked against `ref` byte-for-byte before being
+    trusted, and two-or-more DISTINCT shas both exactly matching `ref`
+    (should not happen for one real ref) is treated as ambiguous rather than
+    guessed at, same as every other unreadable state (non-zero exit, empty
+    stdout): all return `None`.
+
+    Mirrors `GitRepo.ls_remote_exact` (`vcs/git.py`) byte for byte, but goes
+    through this module's own `_git` (not `GitRepo`'s) so the same
+    `GIT_TERMINAL_PROMPT=0` / no-op askpass protection this module's `fetch`
+    already gets also covers this network read — `GitRepo.ls_remote_exact`
+    does not set that env, so it is not reused here.
+    """
+    proc = _git(repo_path, "ls-remote", remote, ref)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    exact_shas: set[str] = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        sha, name = parts
+        if name == ref:
+            exact_shas.add(sha)
+    if len(exact_shas) != 1:
+        return None
+    return next(iter(exact_shas))
+
+
 def _merge_base(repo_path: Path, a: str, b: str) -> str | None:
     proc = _git(repo_path, "merge-base", a, b)
     sha = proc.stdout.strip()
@@ -217,6 +266,31 @@ def _diff(repo_path: Path, before: str, after: str) -> str:
             f"could not diff {before}..{after}: {proc.stderr.strip()}"
         )
     return proc.stdout
+
+
+def _changed_files(repo_path: Path, before: str, after: str) -> list[str]:
+    """The paths changed between `before` and `after` — the exact same two
+    refs `_diff` was just asked to diff for this same run, never a second,
+    independent lookup by PR number.
+
+    This backs the changed-file list `render_markdown` discloses in every
+    verdict. The point is detectability of a crossed head resolution (see
+    `_resolve_pr_mode`'s FETCH_HEAD-race comment): if `after` ever ends up
+    resolved to the wrong PR's head — this race or a different bug entirely —
+    this reads off files from THAT wrong head, so the verdict names the
+    requested PR but lists files that PR does not actually contain, and a
+    reader can catch the mismatch on sight. A file list refetched from the
+    forge by PR number instead would silently agree with the (wrong) header
+    even on a crossed review, and catch nothing — see
+    `test_a_crossed_head_resolution_produces_a_self_contradictory_verdict`.
+    """
+    proc = _git(repo_path, "diff", "--no-color", "--name-only", f"{before}..{after}")
+    if proc.returncode != 0:
+        raise GateUnavailable(
+            f"could not list changed files for {before}..{after}: "
+            f"{proc.stderr.strip()}"
+        )
+    return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _uncommitted_paths(repo_path: Path) -> list[str]:
@@ -391,16 +465,40 @@ def _resolve_pr_mode(
             "different repository than the one checked out"
         )
 
-    proc = _git(repo_path, "fetch", "origin", f"refs/pull/{number}/head")
+    pr_ref = f"refs/pull/{number}/head"
+    # FETCH_HEAD is a SINGLE file per repository, shared by every process
+    # running against this checkout. Two `nh gate --pr` runs sharing
+    # `repo_path` (e.g. #547 and #583) each `fetch` into that one slot; the
+    # OLD code then read FETCH_HEAD straight back, so whichever gate's read
+    # landed after the OTHER gate's fetch resolved the OTHER PR's head —
+    # last writer wins, and a PASS got attributed to a diff that was never
+    # the named PR's. `ls-remote` closes this at the resolution step: it
+    # answers with the sha directly, in this call's own return value, with
+    # no shared on-disk slot for a concurrent gate to stomp on before this
+    # one reads it — so two gates can still run at the same time, they just
+    # no longer share a single mutable answer. The `fetch` below is now
+    # purely to materialize the already-known `head`'s objects locally; its
+    # own write still lands only in FETCH_HEAD (no `:` destination in the
+    # refspec, exactly as before), so no branch is created and no ref the
+    # user owns is moved — but nothing here reads FETCH_HEAD back anymore,
+    # so a concurrent gate clobbering it can no longer cross this verdict
+    # onto its head.
+    head = _ls_remote_exact(repo_path, pr_ref)
+    if not head:
+        raise GateUnavailable(
+            f"could not resolve pull request #{number}'s head on origin"
+        )
+
+    proc = _git(repo_path, "fetch", "origin", pr_ref)
     if proc.returncode != 0:
         raise GateUnavailable(
             f"could not fetch pull request #{number} from origin: "
             f"{proc.stderr.strip()}"
         )
-    head = _rev_parse(repo_path, "FETCH_HEAD")
-    if not head:
+    if not _rev_parse(repo_path, head):
         raise GateUnavailable(
-            f"could not resolve FETCH_HEAD after fetching pull request #{number}"
+            f"could not resolve pull request #{number} head {head[:7]} "
+            "after fetching"
         )
 
     if base:
@@ -590,6 +688,11 @@ async def run_gate(
             f"{after_ref[:7]}: the diff is empty"
         )
 
+    # Same two refs the diff above was just computed from — never a second,
+    # independent lookup by PR number — so the verdict's file list can only
+    # ever describe what was actually reviewed.
+    changed_files = _changed_files(repo_path, before_ref, after_ref)
+
     # `AdversarialReviewer.review`'s `diff_override` path now bounds an
     # over-cap diff through `_bounded_override_diff` and DISCLOSES the cut
     # files to the reviewer instead of silently dropping them (see that
@@ -714,6 +817,7 @@ async def run_gate(
         reviewer_backend=role_backend["backend"],
         reviewer_model=role_backend["model"],
         reviewer_backend_is_default=role_backend["is_default"],
+        changed_files=changed_files,
     )
 
 
@@ -763,6 +867,14 @@ def render_markdown(result: GateResult) -> str:
     verdict = "PASS" if result.passed else "FAIL"
     lines.append(f"## no_human gate — {verdict}")
     lines.append(f"**Compared:** {result.comparison}")
+    # Derived from the SAME before_ref..after_ref this run resolved and
+    # reviewed (see `GateResult.changed_files`), never a second lookup by
+    # PR number — so a crossed head resolution surfaces here as files that
+    # don't belong to the named PR, instead of silently disappearing.
+    files_suffix = (
+        ", ".join(result.changed_files) if result.changed_files else "(none)"
+    )
+    lines.append(f"**Files reviewed:** {files_suffix}")
     model_suffix = f" ({result.reviewer_model})" if result.reviewer_model else ""
     override_note = (
         "" if result.reviewer_backend_is_default
