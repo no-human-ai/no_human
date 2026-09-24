@@ -147,8 +147,27 @@ def _build_qa_section(qa_history: list[dict]) -> str:
     return "\n".join(lines) + "\n" + _ANSWERED_RULES
 
 
+def _resolve_criteria(criteria: Any, task_name: str) -> list[str]:
+    """The module's single answer to "a grill result with no criteria".
+
+    Both the normal "done" parse and the force-finish branch land here, so
+    the two cannot drift into opposite postures again (they did: one coerced
+    a null to a silent [], the other invented [f"Implement: {title}"]).
+    Posture: keep the empty list — inventing a criterion fabricates a spec
+    the human never approved — but never let it pass silently. Same failure
+    #511 fixed for issue-URL intake (see intake/criteria.py).
+    """
+    resolved = list(criteria or [])
+    if not resolved:
+        log.warning(
+            "grill returned no acceptance criteria for %s; the task will be "
+            "UNGRADABLE — supply criteria explicitly.",
+            task_name or "(untitled task)")
+    return resolved
+
+
 def parse_grill_response(
-    text: str, round_n: int, qa_history: list[dict],
+    text: str, round_n: int, qa_history: list[dict], *, task_title: str | None = None,
 ) -> GrillQuestion | GrillResult:
     """Parse the agent's response into a question or final result."""
     blocks = _JSON_BLOCK.findall(text or "")
@@ -174,12 +193,16 @@ def parse_grill_response(
     # `.get(key, default)` returns the default only for an ABSENT key; a
     # present-but-null field yields None, which violates the `str`/`list[str]`
     # fields below and crashes a `for c in acceptance_criteria` consumer. `or`
-    # collapses a null (or empty) field to its typed default.
+    # collapses a null (or empty) field to its typed default. A null/empty
+    # acceptance_criteria goes through _resolve_criteria so the resulting
+    # UNGRADABLE state is logged, not silent.
     if data.get("type") == "done":
+        title = data.get("title") or ""
         return GrillResult(
-            title=data.get("title") or "",
+            title=title,
             description=data.get("description") or "",
-            acceptance_criteria=data.get("acceptance_criteria") or [],
+            acceptance_criteria=_resolve_criteria(
+                data.get("acceptance_criteria"), title or task_title or ""),
             qa_log=list(qa_history),
         )
 
@@ -271,15 +294,18 @@ async def grill_step(
             getattr(result, "cache_creation_tokens", 0) or 0),
     }
 
-    parsed = parse_grill_response(result.final_text, round_n, qa_history)
+    parsed = parse_grill_response(result.final_text, round_n, qa_history, task_title=title)
 
     # Past max rounds and still got a question — force a result with what
-    # we have so the pipeline is never blocked indefinitely.
+    # we have so the pipeline is never blocked indefinitely. It still never
+    # hangs the pipeline, but it no longer fabricates "Implement: {title}" as
+    # if it were an approved criterion — _resolve_criteria warns instead, the
+    # same posture as the normal "done" path, so the two cannot drift apart.
     if force and isinstance(parsed, GrillQuestion):
         return GrillResult(
             title=title,
             description=description or "",
-            acceptance_criteria=[f"Implement: {title}"],
+            acceptance_criteria=_resolve_criteria([], title),
             qa_log=list(qa_history),
             **usage,
         )

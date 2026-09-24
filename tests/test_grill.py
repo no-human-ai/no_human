@@ -1,5 +1,7 @@
 """B2: Tests for the intake grill — response parsing and step flow."""
 
+import logging
+
 import pytest
 
 from no_human.intake.grill import (
@@ -102,6 +104,82 @@ class TestParseGrillResponse:
         assert isinstance(question, GrillQuestion)
         assert isinstance(question.question, str) and question.question
         assert question.suggestions == []
+
+
+class TestEmptyCriteriaPosture:
+    """Single drift guard: the normal "done" path and the force-finish path
+    in grill_step must agree on what happens when acceptance_criteria comes
+    back null/empty — both must warn and both must return []. Before this
+    class, the two branches disagreed (silent [] vs. a fabricated synthetic
+    criterion); every test here pins the unified posture so they cannot
+    silently diverge again.
+    """
+
+    def test_null_criteria_warns_naming_the_task(self, caplog):
+        caplog.set_level(logging.WARNING, logger="no_human.intake.grill")
+        text = (
+            '```json\n{"type": "done", "title": "Add caching", '
+            '"description": "D", "acceptance_criteria": null}\n```'
+        )
+        result = parse_grill_response(text, round_n=1, qa_history=[])
+        assert isinstance(result, GrillResult)
+        assert result.acceptance_criteria == []
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert warnings[0].name == "no_human.intake.grill"
+        assert "Add caching" in caplog.text
+
+    def test_empty_list_criteria_warns(self, caplog):
+        caplog.set_level(logging.WARNING, logger="no_human.intake.grill")
+        text = (
+            '```json\n{"type": "done", "title": "Add caching", '
+            '"description": "D", "acceptance_criteria": []}\n```'
+        )
+        result = parse_grill_response(text, round_n=1, qa_history=[])
+        assert isinstance(result, GrillResult)
+        assert result.acceptance_criteria == []
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Add caching" in caplog.text
+
+    def test_null_title_warning_names_the_task_from_the_caller(self, caplog):
+        caplog.set_level(logging.WARNING, logger="no_human.intake.grill")
+        text = (
+            '```json\n{"type": "done", "title": null, '
+            '"description": null, "acceptance_criteria": null}\n```'
+        )
+        result = parse_grill_response(
+            text, round_n=1, qa_history=[], task_title="Fix X")
+        assert isinstance(result, GrillResult)
+        assert result.acceptance_criteria == []
+        assert "Fix X" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_both_paths_produce_the_same_empty_criteria_and_warning(
+        self, caplog,
+    ):
+        from no_human.intake.grill import grill_step
+
+        caplog.set_level(logging.WARNING, logger="no_human.intake.grill")
+        caplog.clear()
+        p1 = parse_grill_response(
+            '```json\n{"type":"done","title":"Fix X","description":"d",'
+            '"acceptance_criteria":null}\n```',
+            1, [], task_title="Fix X",
+        )
+        assert isinstance(p1, GrillResult)
+        assert "Fix X" in caplog.text
+
+        caplog.clear()
+        qa4 = [{"question": f"Q{i}", "answer": f"A{i}"} for i in range(4)]
+        backend = FakeBackend(
+            '```json\n{"type": "question", "question": "More?"}\n```'
+        )
+        p2 = await grill_step("Fix X", None, None, qa4, backend, max_rounds=5)
+        assert isinstance(p2, GrillResult)
+        assert "Fix X" in caplog.text
+
+        assert p1.acceptance_criteria == p2.acceptance_criteria == []
 
 
 # --------------------------------------------------------------------------- #
