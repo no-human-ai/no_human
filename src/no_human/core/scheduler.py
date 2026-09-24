@@ -27,6 +27,7 @@ import logging
 import os
 import platform
 import sqlite3
+import subprocess
 import time
 import traceback
 from collections import deque
@@ -1375,6 +1376,80 @@ class Scheduler:
                 "had already landed", reconciled)
         return reconciled
 
+    async def _salvage_committed_work(self, task) -> dict | None:
+        """The attempt that just died left a commit on a branch, or it didn't.
+
+        Called from `_run`'s pool-crash handler, between the (unchanged)
+        `task_crashed` event write and the `set_status` call, to answer the
+        one question that separates a bare crash from a crash that stranded
+        real work: is there a commit sitting on a branch nobody will ever
+        look at again? Scoped to `latest_open_attempt` — the row for the
+        run that just died — deliberately: a prior, already-closed attempt's
+        commit is already accounted for by its own row, and widening to
+        `latest_attempt_branch` (which reads across every attempt ever made)
+        would also fire the no-commit case this same handler protects.
+
+        Never raises: a failure here must degrade to today's exact
+        behaviour (plain FAILED, nothing salvaged), not cost the pool
+        worker this except block exists to protect.
+        """
+        row = await self.store.latest_open_attempt(task.id)
+        if not row:
+            return None
+        db_sha = str(row.get("commit_sha") or "").strip()
+        if not db_sha:
+            # `branch_name` is stamped the moment the attempt creates its
+            # branch (orchestrator `_run`'s `update_attempt(..., branch_name=
+            # branch)`) — BEFORE the coder does anything, so it is set for
+            # essentially every crash, committed or not, and cannot be the
+            # signal this method keys on. `commit_sha` is only ever written
+            # once a real commit lands (e.g. `update_attempt(..., commit_sha=
+            # commit.sha)`), so an empty one here means no commit ever
+            # happened — the exact no-commit crash whose plain-FAILED
+            # behaviour must stay unchanged. Bail before touching git.
+            return None
+        branch = str(row.get("branch_name") or "").strip()
+        sha = db_sha
+        git_error = None
+        if branch and task.repo_path:
+            try:
+                resolved = await asyncio.to_thread(
+                    self._resolve_branch_sha, task.repo_path, branch)
+            except Exception as exc:  # noqa: BLE001 — git failure falls back to DB
+                resolved, git_error = None, f"{type(exc).__name__}: {exc}"
+            if resolved:
+                sha = resolved
+            elif resolved is None and git_error is None:
+                git_error = f"git rev-parse --verify {branch} found nothing"
+        return {
+            "branch": branch,
+            "commit_sha": sha,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "error": git_error,
+            "pushed": False,
+        }
+
+    @staticmethod
+    def _resolve_branch_sha(repo_path: str, branch: str) -> str | None:
+        """Read-only `git rev-parse --verify <branch>` in *repo_path*.
+
+        The worktree that ran the attempt is already torn down by the time
+        this runs (`_run_task_body`'s `finally`), so `git branch
+        --show-current` would answer for the wrong checkout — this asks the
+        MAIN repo directly for the sha the branch ref itself points at,
+        which survives the worktree's removal.
+        """
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode != 0:
+            return None
+        return r.stdout.strip() or None
+
     async def _read_heartbeat_with_retry(self) -> dict | None:
         """Read the id=1 heartbeat row, retrying a bounded number of times on
         exception before giving up. A read failure is UNKNOWN, not "no row"
@@ -2500,10 +2575,65 @@ class Scheduler:
                 await self.store.save_events(task.id, [crash_event])
             except Exception:  # noqa: BLE001
                 pass
-            # Mark the task as FAILED so it doesn't stay stuck.
+
+            # Did this crash strand a real commit? A crash that only ever
+            # reaches here AFTER a successful commit and BEFORE a PR is not
+            # the same incident as one with nothing to lose — see
+            # `_salvage_committed_work`'s docstring. Its own try: a salvage
+            # failure must fall back to today's exact FAILED behaviour, not
+            # cost us the set_status below or the pool worker this except
+            # exists to protect. This does NOT default the unknown attribute
+            # that caused the crash — `termination_reason` above still
+            # carries it verbatim into both the crash event and the salvage
+            # reason recorded below.
+            salvage: dict | None = None
             try:
-                from .task import TaskStatus as _TS
-                await self.store.set_status(task, _TS.FAILED, validate=False)
+                salvage = await self._salvage_committed_work(task)
+            except Exception:  # noqa: BLE001 — salvage must never cost the worker
+                salvage = None
+            from .task import TaskStatus as _TS
+            target_status = _TS.FAILED
+            if salvage is not None:
+                target_status = _TS.PARTIAL_SUCCESS
+                try:
+                    branch = salvage.get("branch") or ""
+                    sha = salvage.get("commit_sha") or ""
+                    short = sha[:8] if sha else "?"
+                    await self.store.merge_context(
+                        task.id, {"salvaged_work": salvage})
+                    await self.store.close_open_attempts(
+                        task.id,
+                        reason=(
+                            f"crashed after committing {short} on {branch}, "
+                            "before a PR was opened — the work is on that "
+                            f"branch: {termination_reason}"),
+                    )
+                    await self.store.save_events(task.id, [{
+                        "source": "scheduler", "kind": "work_salvaged",
+                        "text": (f"{task.id[:8]}: salvaged commit {short} on "
+                                 f"{branch} after a post-commit crash"),
+                        "ts": time.time(),
+                    }])
+                except Exception:  # noqa: BLE001 — degrade to plain FAILED
+                    target_status = _TS.FAILED
+
+            # Mark the task FAILED, or PARTIAL_SUCCESS if salvaged, so it
+            # doesn't stay stuck. Each branch calls `set_status` with a
+            # LITERAL `TaskStatus.X` attribute rather than the `target_status`
+            # variable on purpose: `test_resume_entry_registry.py`'s AST walk
+            # treats a non-literal `set_status` target as an unregistered
+            # "re-entry into the loop" (it might be claimable, so it must be
+            # accounted for) — a bookkeeping question this terminal, one-way
+            # crash write has nothing to do with. Two literal call sites keep
+            # that walk's answer unchanged: neither FAILED nor PARTIAL_SUCCESS
+            # is claimable.
+            try:
+                if target_status is _TS.PARTIAL_SUCCESS:
+                    await self.store.set_status(
+                        task, _TS.PARTIAL_SUCCESS, validate=False)
+                else:
+                    await self.store.set_status(
+                        task, _TS.FAILED, validate=False)
                 self._consecutive_status_write_failures = 0
             except Exception as werr:  # noqa: BLE001
                 # This used to be `except Exception: pass`, with no counter.
@@ -2523,15 +2653,16 @@ class Scheduler:
                 self._consecutive_status_write_failures += 1
                 self._last_status_write_error = f"{type(werr).__name__}: {werr}"
                 log.error(
-                    "could not mark task %s FAILED after its crash: %s. The "
+                    "could not mark task %s %s after its crash: %s. The "
                     "task keeps a claimable status and WILL be re-dispatched. "
                     "%d consecutive status-write failure(s) — if this is "
                     "climbing, the database connection is the fault, not the "
-                    "task.", task.id[:8], werr,
+                    "task.", task.id[:8], target_status.value.upper(), werr,
                     self._consecutive_status_write_failures, exc_info=True)
                 self._on_event(
                     "status_write_failed",
-                    f"{task.id[:8]}: could not record FAILED ({werr}); "
+                    f"{task.id[:8]}: could not record "
+                    f"{target_status.value.upper()} ({werr}); "
                     f"{self._consecutive_status_write_failures} in a row")
         finally:
             self._running.pop(task.id, None)

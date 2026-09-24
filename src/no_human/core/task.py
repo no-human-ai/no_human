@@ -112,6 +112,10 @@ class TaskStatus(str, Enum):
     ESCALATED = "escalated"
     DONE = "done"
     FAILED = "failed"
+    # An attempt produced a verified local commit, then the run died before
+    # a PR existed; the commit is the durable artifact and the branch still
+    # holds it — a stranded-but-real success, not a bare failure.
+    PARTIAL_SUCCESS = "partial_success"
 
 
 # The happy-path spine, in order. Used to advance the loop linearly.
@@ -127,7 +131,7 @@ MAIN_FLOW: tuple[TaskStatus, ...] = (
 )
 
 TERMINAL_STATES: frozenset[TaskStatus] = frozenset(
-    {TaskStatus.DONE, TaskStatus.FAILED}
+    {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS}
 )
 
 # Off-ramp states reachable from any active working state (Part 22).
@@ -138,6 +142,7 @@ _OFF_RAMPS: frozenset[TaskStatus] = frozenset(
         TaskStatus.PAUSED_QUOTA,
         TaskStatus.ESCALATED,
         TaskStatus.FAILED,
+        TaskStatus.PARTIAL_SUCCESS,
     }
 )
 
@@ -304,6 +309,15 @@ def assert_landed_reconciliation(src: TaskStatus) -> None:
 #: refusing this edge. The only failed/cancelled shape recognised here is
 #: `FAILED` itself — there is no separate `CANCELLED` status (see
 #: `core/scheduler.py`; "cancelled" is `FAILED` + `context["cancel_reason"]`).
+#: `PARTIAL_SUCCESS` is deliberately NOT included here. Unlike `FAILED`, it
+#: has no auto-reconcile sweep wired up: `Store.landed_reconcilable_terminal_
+#: tasks` (core/db.py) SELECTs only `status = FAILED`, and the
+#: `terminal_reconcile` CAS in `Store._write_status` (core/db.py) requires the
+#: row still read exactly `FAILED` at write time. Adding `PARTIAL_SUCCESS`
+#: here without updating both of those would make it silently *less*
+#: recoverable than `FAILED` — never a candidate for the sweep, and a no-op
+#: write even if it somehow reached this gate. A human can still land it via
+#: the ordinary hand-land override path (`blockers/landed_override.py`).
 TERMINAL_LANDED_RECONCILABLE: frozenset[TaskStatus] = frozenset({
     TaskStatus.FAILED,
 })
@@ -316,7 +330,8 @@ def assert_terminal_landed_reconciliation(src: TaskStatus) -> None:
     already went failed (with or without a `cancel_reason`), but whose
     recorded work is verifiably reachable from the default branch, is
     reconciled to DONE ONLY through this gate — never by widening
-    `ALLOWED_TRANSITIONS` or `LANDED_RECONCILABLE`.
+    `ALLOWED_TRANSITIONS` or `LANDED_RECONCILABLE`. `PARTIAL_SUCCESS` is not
+    accepted here — see `TERMINAL_LANDED_RECONCILABLE`'s comment.
     """
     if src not in TERMINAL_LANDED_RECONCILABLE:
         raise IllegalTransition(

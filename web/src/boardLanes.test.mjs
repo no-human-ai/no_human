@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  LANES, routeTask, isNeedsYou, isWaiting, waitingTagText, isRealFailure, BOARD_LANES, OUTCOME_LANES,
+  LANES, routeTask, isNeedsYou, isWaiting, waitingTagText, isRealFailure, isSalvaged, BOARD_LANES, OUTCOME_LANES,
   isRunning, isQueued, cardActivity, deriveCounts,
 } from "./boardLanes.js";
 
@@ -51,6 +51,15 @@ test("isWaiting flags parked-but-self-resolving tasks (the old Waiting column, o
 
 test("an unknown status falls back to Working, never lost", () => {
   assert.equal(routeTask({ status: "some_new_state" }), "working");
+});
+
+// A crash that salvaged a commit (Scheduler._salvage_committed_work) is still
+// terminal and still belongs where a human already looks for "what happened
+// to my task" — the Failed lane — not a fourth outcome lane of its own.
+test("partial_success (a salvaged post-commit crash) routes to the Failed lane", () => {
+  assert.equal(routeTask({ status: "partial_success" }), "failed");
+  const failed = LANES.find((l) => l.key === "failed");
+  assert.ok(failed.statuses.includes("partial_success"));
 });
 
 test("Review PR and Needs Answer are both loud, human-facing lanes", () => {
@@ -103,6 +112,18 @@ test("isRealFailure excludes operator-cancelled tasks", () => {
   assert.equal(isRealFailure({ status: "awaiting_input" }), false);
   assert.equal(isRealFailure(null), false);
   assert.equal(isRealFailure(undefined), false);
+});
+
+// isRealFailure must not lie about a salvaged crash either: partial_success
+// is not "failed" at all, so it was already excluded by the status check —
+// this pins that down explicitly, next to isSalvaged, so neither predicate
+// can silently start double-counting the other's shape.
+test("isRealFailure excludes partial_success; isSalvaged is its own predicate", () => {
+  assert.equal(isRealFailure({ status: "partial_success" }), false);
+  assert.equal(isSalvaged({ status: "partial_success" }), true);
+  assert.equal(isSalvaged({ status: "failed" }), false);
+  assert.equal(isSalvaged(null), false);
+  assert.equal(isSalvaged(undefined), false);
 });
 
 // 5D (operator): the board shows only the three GATE lanes. Done and Failed are outcomes, not
