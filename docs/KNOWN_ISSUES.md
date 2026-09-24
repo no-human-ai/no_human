@@ -402,3 +402,80 @@ instance was contacted.** These results say nothing about either vendor's real
 auth, scopes, rate limits or payload shapes. A live smoke test against one real
 instance of each remains unperformed and is the obvious next step.
 
+---
+
+## KI-6 — the public-repo history gate has been failing, unread, since before this entry
+
+**Status:** OPEN, triaged 2026-09-24. The pre-push guard's mode flag is unset
+on this repo, so `.nh-local/nh-guard`'s check runs report-only: it has been
+computing a FAILED verdict on every push and nobody had read what it was
+flagging. This entry is that reading, done once, in full, and classified by
+matched rule. No history was rewritten, no blob was deleted, and this entry
+does not change the guard's mode flag or how it is set anywhere in the
+tracked tree: it stays unset, and no tracked file assigns it a value
+(checked by `tests/test_p1_history_gate_triage_doc.py`, in the test named
+for that purpose). Full per-hit detail (blob sha, path, introducing commit,
+and the scanner's own match context) is deliberately not reproduced here; it
+lives in an
+untracked, git-ignored report next to the raw scan output under
+`.nh-local/p1-triage-2026-09-24/` (`.gitignore:76:.nh-local` — `git
+check-ignore -v` confirms any path underneath it, e.g.
+`.nh-local/p1-triage-2026-09-24/REPORT.md`, is ignored).
+
+**The count this entry's originating ticket quoted was stale, and that is
+part of the finding, not a rounding difference.** The ticket cited a
+2026-09-18 measurement of "19 blob hits" on an earlier tip. Re-derived here
+against the current public tip with the identical rule set (125 literal
+terms, 10 shape classes, 17 competitor terms — unchanged between both dates),
+the real, complete count is **1672 blob, 0 path, 33 message, 40 identity, 0
+tag** hit lines. The 2026-09-18 figure was never backed by a completed scan:
+the only raw output on disk for that tip's measurement attempts ends mid-run
+with zero verdict lines captured (`grep -c LEAK` is 0 on both surviving
+artifacts). Nearly all of the underlying content was already present at the
+2026-09-18 tip — every commit behind the current message/identity hits
+predates it (`git merge-base --is-ancestor`), and 9 of the 11 distinct
+blob-family source paths carry byte-identical content at both tips — so a
+completed scan on 2026-09-18 would have counted most of this too; only one of
+the eleven blob-family paths was genuinely introduced afterward.
+
+A single matched rule fires once per historical commit that still carries an
+unchanged copy of the flagged blob, so raw hit-line counts vastly overstate
+the number of distinct things a human needs to decide about. Grouped by
+matched rule and collapsed to the distinct blobs/commits behind each one:
+
+| Rule | Family | Hits | Verdict | Action |
+|---|---|---|---|---|
+| Rule 1 | blob / shape class (absolute home-directory path pattern) | 6 | FALSE POSITIVE | narrow the shape rule to exempt the history-gate's own hit-report tooling and its tests, and the web replay-redaction feature and its tests/fixtures — all of which construct that path shape as literal example data, not a real path (follow-up, not done here) |
+| Rule 2 | blob / literal (a fixture email-address pattern) | 2 | FALSE POSITIVE | narrow the rule, or move the synthetic fixture off a domain the rule matches (follow-up, not done here) |
+| Rule 3 | blob / literal (a private companion-repo codename, in shipped code comments/docstrings) | 3 | TRUE POSITIVE | history decision — open. This is a real trace, reachable by anyone who clones the public tip. One of the three source blobs was introduced hours after the 2026-09-18 measurement's tip, i.e. it is new since the ticket, not something the old scan merely missed |
+| Rule 4 | identity — AUTHOR *and* COMMITTER trailer on the same commit | 7 | TRUE POSITIVE | history decision — open. Real personal identity (full name + personal email address), reachable by clone. Count is distinct commits |
+| Rule 5 | identity — AUTHOR trailer only | 17 | TRUE POSITIVE | history decision — open. Same identity as Rule 4; a second, disjoint set of commits |
+| Rule 6 | message — the same personal email address appearing in a commit message body | 17 | TRUE POSITIVE | history decision — open. Same 17 commits as Rule 5; the address appears in both the trailer and the body text of each. Count is distinct commits |
+
+**Reproduction** (single-threaded; from a checkout where `.nh-local` resolves
+to the scanner, e.g. this repo's `no_human-public` remote checkout; took on
+the order of an hour against the full history at time of measurement):
+
+```
+python3 .nh-local/verify_public_history.py . --ref <tip-sha> --no-repo-tags
+```
+
+**Known scanner limitation, not fixed here.** A single-commit `--ref` range
+reports that commit's whole tree, not a diff against its parent — a hit means
+"this rule matches something present in the tree at this ref," not "this
+commit introduced a new match." Provenance for every blob-family hit in this
+entry was instead derived independently, per path, by walking
+`git rev-list --reverse HEAD -- <path>` and comparing each historical
+revision's blob sha at that path to the tip's blob sha, taking the earliest
+match — never via `git log -S<term>`, which would put the matched term itself
+into shell argv, shell history, and the process table.
+
+**Boundary.** The blob-family row counts above (6 / 2 / 3 distinct source
+paths) come from the distinct paths observed across a 200-line-capped sample
+of the 1672 raw blob hit lines (the scanner caps printed output per group);
+the sample's per-path repetition pattern saturates well inside the cap in a
+way consistent with those 11 paths being the complete population, but that is
+an observed-pattern inference, not a machine-verified enumeration of the full
+1672 lines. The message/identity counts (Rules 4-6) are exact: those two
+groups printed in full, under the cap.
+
