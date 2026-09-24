@@ -11,8 +11,11 @@ before; a park is never converted into "done"."""
 import subprocess
 from types import SimpleNamespace
 
-from no_human.blockers.challenge import (CHALLENGEABLE, build_challenge_prompt,
-                                         parse_challenge)
+from no_human.blockers.challenge import (
+    CHALLENGEABLE,
+    build_challenge_prompt,
+    parse_challenge,
+)
 from no_human.blockers.taxonomy import Blocker, BlockerCategory
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
@@ -128,6 +131,7 @@ async def test_resolvable_costs_the_attempt_then_the_second_blocker_parks(
 
     outcome = await orch.run_task(t)
 
+    assert outcome is not None
     assert outcome.status is TaskStatus.AWAITING_INPUT   # honest park survives
     assert fake.calls == 1, "exactly one challenge per task"
     attempts = await store.list_attempts(t.id)
@@ -157,6 +161,7 @@ async def test_external_verdict_parks_immediately(
 
     outcome = await orch.run_task(t)
 
+    assert outcome is not None
     assert outcome.status is TaskStatus.AWAITING_INPUT
     assert fake.calls == 1
     assert len(await store.list_attempts(t.id)) == 1, (
@@ -201,6 +206,7 @@ async def test_supervisor_failure_honors_the_blocker(
 
     outcome = await orch.run_task(t)
 
+    assert outcome is not None
     assert outcome.status is TaskStatus.AWAITING_INPUT
     assert fake.calls == 1
     assert len(await store.list_attempts(t.id)) == 1
@@ -274,10 +280,10 @@ def test_the_shipped_default_turns_the_gate_on():
     """Every test here forces `blockers.challenge` True through `_gate_on`, so
     flipping the SHIPPED default to False would disable the whole feature with
     the suite green. Pin the default itself."""
-    from no_human.config import load_config
-
     import tempfile
     from pathlib import Path
+
+    from no_human.config import load_config
 
     with tempfile.TemporaryDirectory() as d:
         cfg = load_config(Path(d) / "config.yaml")
@@ -338,3 +344,152 @@ async def test_an_empty_attempt_after_a_challenge_is_not_credited(
     assert not any(a.get("status") == "succeeded" for a in attempts), (
         f"no attempt did deliverable work, yet one is recorded succeeded: "
         f"{[(a.get('status'), (a.get('failure_reason') or '')[:40]) for a in attempts]}")
+
+# ── Observability (Issue #432) ─────────────────────────────────────────── #
+
+async def test_unparseable_supervisor_output_emits_advisory(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    events = []
+    fake = _FakeSupervisor("This is unparseable text without JSON.", raises=False)
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome is not None
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert fake.calls == 1
+    
+    advisories = [e for e in events if e.get("kind") == "advisory"]
+    assert any("parse miss" in e.get("text", "") and "AMBIGUITY" in e.get("text", "") for e in advisories)
+    
+    assert not any(e.get("kind") == "blocker_challenge" for e in events)
+
+
+async def test_gate_disabled_emits_normal_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    events = []
+    fake = _FakeSupervisor(_resolvable(), raises=False)
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    cfg.data["blockers"]["challenge"] = False
+    
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert fake.calls == 0
+
+    skipped_events = [e for e in events if e.get("kind") == "challenge_skipped"]
+    assert len(skipped_events) == 1
+    assert "gate disabled" in skipped_events[0]["text"]
+
+    assert not any(e.get("kind") == "advisory" and "gate disabled" in e.get("text", "") for e in events)
+    assert not any(e.get("kind") == "blocker_challenge" for e in events)
+
+
+async def test_non_challengeable_category_emits_normal_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    quota_json = (
+        '{"category": "QUOTA", "confidence": 1.0, '
+        '"root_cause_hypothesis": "rate limit exceeded", '
+        '"question": "", "goal": "add helper", "evidence": "429 Too Many Requests"}'
+    )
+    events = []
+    fake = _FakeSupervisor(_resolvable(), raises=False)
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    
+    orch = Orchestrator(store, cfg.data, BlockerBackend(quota_json),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+    assert outcome.status is TaskStatus.PAUSED_QUOTA
+    assert fake.calls == 0
+
+    skipped_events = [e for e in events if e.get("kind") == "challenge_skipped"]
+    assert len(skipped_events) == 1
+    assert "QUOTA" in skipped_events[0]["text"]
+    assert "category not challengeable" in skipped_events[0]["text"]
+    
+    assert not any(e.get("kind") == "advisory" and "QUOTA" in e.get("text", "") for e in events)
+    assert not any(e.get("kind") == "blocker_challenge" for e in events)
+
+
+async def test_already_challenged_emits_normal_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    events = []
+    fake = _FakeSupervisor(_resolvable(), raises=False)
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    t.context = {"blocker_challenged": True}
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert fake.calls == 0
+
+    skipped_events = [e for e in events if e.get("kind") == "challenge_skipped"]
+    assert len(skipped_events) == 1
+    assert "already challenged" in skipped_events[0]["text"]
+    
+    assert not any(e.get("kind") == "advisory" and "already challenged" in e.get("text", "") for e in events)
+    assert not any(e.get("kind") == "blocker_challenge" for e in events)
+
+
+async def test_valid_verdict_emits_blocker_challenge_and_loops(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    events = []
+    fake = _FakeSupervisor(_resolvable(), raises=False)
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    
+    from no_human.agent.claude_backend import AgentResult
+    class MultiTurnBackend:
+        def __init__(self, start_json):
+            self.calls = 0
+            self.start_json = start_json
+        async def run(self, prompt, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return AgentResult(final_text='BLOCKER_JSON_START\n' + self.start_json + '\nBLOCKER_JSON_END',
+                                   num_turns=1, is_error=False, tokens_used=10, session_id="s", stop_reason="end_turn")
+            else:
+                return AgentResult(final_text='done', num_turns=1, is_error=False, tokens_used=10, session_id="s", stop_reason="end_turn")
+    
+    orch = Orchestrator(store, cfg.data, MultiTurnBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+    
+    assert outcome is not None
+    assert fake.calls == 1
+    
+    t_after = await store.get_task(t.id)
+    assert t_after.context.get("blocker_challenged") is True
+
+    challenge_events = [e for e in events if e.get("kind") == "blocker_challenge"]
+    assert len(challenge_events) == 1
+    assert "judged resolvable by the supervisor" in challenge_events[0]["text"]
+    assert challenge_events[0].get("verdict") == "resolvable"
+

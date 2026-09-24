@@ -41,8 +41,15 @@ import no_human.core.orchestrator as orch_mod
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
+from no_human.vcs import ci_rollup as ci_rollup_mod
 from no_human.vcs.git import GitRepo
 from no_human.vcs.receipts import Receipt
+
+# Captured at collection time, before the autouse fixture below ever
+# monkeypatches `orch_mod.ci_rollup.fetch_ci_rollup` — a stable reference to
+# the REAL reducer, for the two tests that need to drive the full
+# aggregate_rollup -> stamp_delivered_ci_status path rather than stub it.
+_REAL_FETCH_CI_ROLLUP = ci_rollup_mod.fetch_ci_rollup
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +62,7 @@ def _no_real_ci_rollup_network_calls(monkeypatch):
     exercise the poll itself — the rest of this file predates that poll and
     must stay deterministic/offline."""
     async def _default(pr_url):
-        return None, ()
+        return None, (), ()
 
     monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", _default)
 
@@ -724,7 +731,7 @@ async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the
     work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
 
     async def fake_fetch(pr_url):
-        return "failure", ("File inventory",)
+        return "failure", ("File inventory",), ()
 
     monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
 
@@ -758,7 +765,7 @@ async def test_a_green_rollup_is_ready_six_of_six(store, tmp_path, monkeypatch):
     work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
 
     async def fake_fetch(pr_url):
-        return "success", ()
+        return "success", (), ()
 
     monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
 
@@ -785,7 +792,7 @@ async def test_a_repo_with_no_checks_stays_tolerated(store, tmp_path, monkeypatc
     work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
 
     async def fake_fetch(pr_url):
-        return None, ()
+        return None, (), ()
 
     monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
 
@@ -816,7 +823,7 @@ async def test_no_delivered_github_pr_never_polls(store, tmp_path, monkeypatch):
 
     async def fake_fetch(pr_url):
         calls["n"] += 1
-        return "success", ()
+        return "success", (), ()
 
     monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
 
@@ -861,6 +868,104 @@ async def test_a_rollup_fetch_failure_is_advisory_only(store, tmp_path, monkeypa
     verdict = mp.get(reviewed_sha) or {}
     # The pre-CI compute (ci: none reported, tolerated) survives untouched.
     assert verdict.get("ready") is True, verdict
+
+
+_PR541_REQUIRED = (
+    "CLA ledger",
+    "Container images build",
+    "File inventory",
+    "Python",
+    "Web board",
+    "Wheel carries the board",
+)
+
+
+async def test_pr541_shape_with_known_required_contexts_is_not_ready(
+    store, tmp_path, monkeypatch,
+):
+    """THE TICKET, end to end: PR#541's actual shape — only a non-required
+    "CLA nudge" job ran, and the required-name lookup demonstrably
+    succeeded (a non-empty set naming the six branch-protection contexts).
+    Drives the REAL `fetch_ci_rollup` -> `aggregate_rollup` ->
+    `stamp_delivered_ci_status` chain (only the bottom-most `gh` call,
+    `pr_watcher.default_pr_checks_and_required`, is faked) under the
+    default `success_or_unknown` policy. `ci_status` stays "success" (the
+    reducer's state vocabulary is unchanged — see `ci_rollup.py`'s
+    module docstring for why), but the persisted verdict for the reviewed
+    head must be NOT ready, naming the missing required contexts."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", _REAL_FETCH_CI_ROLLUP)
+
+    async def fake_checks_and_required(ref):
+        return (
+            [{"name": "CLA nudge", "status": "pass", "required": False}],
+            _PR541_REQUIRED,
+        )
+
+    monkeypatch.setattr(
+        ci_rollup_mod.pr_watcher, "default_pr_checks_and_required",
+        fake_checks_and_required,
+    )
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/541", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert (task.context or {}).get("ci_status") == "success"
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("ready") is False, verdict
+    ci_rule = next(r for r in verdict["rules"] if r["name"] == "ci")
+    assert ci_rule["passed"] is False, ci_rule
+    # `_format_failed_checks` (unmodified, reused as-is) shows only the first
+    # three names + a "+N more" suffix — with six required names sorted
+    # alphabetically, "Python" falls past the cutoff. Assert on what's
+    # actually shown plus the "+3 more" count, rather than a name that isn't.
+    assert "required checks never ran" in ci_rule["detail"], ci_rule
+    assert "CLA ledger" in ci_rule["detail"], ci_rule
+    assert "+3 more" in ci_rule["detail"], ci_rule
+
+
+async def test_lookup_failure_shape_stays_ready(store, tmp_path, monkeypatch):
+    """Identical PR#541 checks shape, but the required-name lookup FAILED
+    (empty set) — from the data alone, indistinguishable from a repo with
+    genuinely zero required checks. Must stay READY, with the unchanged
+    "ci: success" detail — an outage (or a no-required-checks repo) must
+    never read as a block."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", _REAL_FETCH_CI_ROLLUP)
+
+    async def fake_checks_and_required(ref):
+        return [{"name": "CLA nudge", "status": "pass", "required": False}], ()
+
+    monkeypatch.setattr(
+        ci_rollup_mod.pr_watcher, "default_pr_checks_and_required",
+        fake_checks_and_required,
+    )
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/541", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert (task.context or {}).get("ci_status") == "success"
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("ready") is True, verdict
+    ci_rule = next(r for r in verdict["rules"] if r["name"] == "ci")
+    assert ci_rule["passed"] is True, ci_rule
+    assert ci_rule["detail"] == "ci: success", ci_rule
 
 
 # ---------------------------------------------------------------------------

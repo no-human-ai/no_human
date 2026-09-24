@@ -75,10 +75,8 @@ class Landability:
       "conflict" — conflicts a human must resolve (rebase) before landing.
       "unknown"  — the question could not be asked (no resolvable base, git
                    missing, timeout, unparseable output, or any unexpected
-                   error). Fail-open by design, matching this repo's
-                   existing `ci: success_or_unknown` stance: a git we
-                   cannot read must not turn a genuinely landable task into
-                   a refusal.
+                   error). `nh approve --ready` does not count it as landable:
+                   it reports it, and `--yes` skips it.
     """
 
     state: str
@@ -171,6 +169,6 @@ async def check_landability(repo_path: str, branch: str, *,
         return Landability(
             "conflict", base_ref, base_sha, sorted_paths,
             f"conflicts with {base_ref} in " + ", ".join(sorted_paths))
-    except Exception as exc:  # noqa: BLE001 — fail-open contract, see class docstring
+    except Exception as exc:  # noqa: BLE001 — unknown state, see class docstring
         return Landability("unknown", "", "", (),
                             f"landability probe raised: {exc}")
