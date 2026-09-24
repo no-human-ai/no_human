@@ -44,7 +44,7 @@ from ..agent.claude_backend import (
     dewrap as _dewrap,
 )
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned, is_outside_repo
-from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
+from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook, review_continuity_send_back_lines
 from ..agent.verification_receipts import KINDS
 from ..blockers import (
     CONSUMED_HUMAN_PROVENANCE,
@@ -11425,15 +11425,11 @@ class Orchestrator:
         raise into the pipeline.
         """
         from ..agent.advisory import advisory_backend
-        from ..blockers.challenge import (CHALLENGEABLE, build_challenge_prompt,
-                                          parse_challenge)
+        from ..blockers.challenge import (build_challenge_prompt, check_challenge_eligibility, parse_challenge)
         try:
-            if not (self.config.get("blockers") or {}).get("challenge", True):
-                return None
-            if blocker.category not in CHALLENGEABLE:
-                return None
-            ctx = task.context or {}
-            if ctx.get("blocker_challenged"):
+            skip = check_challenge_eligibility(self.config, blocker, task.context)
+            if skip:
+                self.emit("challenge_skipped", skip)
                 return None
             model = self.config.get("llm", {}).get(
                 "supervisor_model", "claude-sonnet-5")
@@ -11448,7 +11444,10 @@ class Orchestrator:
             # One challenge per task, spent whenever the check RAN and parsed —
             # external verdicts confirm honesty and must not be re-litigated
             # on the next blocker either.
+            if verdict is None:
+                self._advisory(f"blocker challenge parse miss: supervisor returned output that could not be parsed into a challenge verdict for {blocker.category.name}")
             if verdict is not None:
+                ctx = task.context or {}
                 ctx["blocker_challenged"] = True
                 ctx["challenged_blocker"] = blocker.to_dict()
                 written = {
@@ -12256,7 +12255,7 @@ class Orchestrator:
             lines.append("  Operator answers (binding — these settle what they address):")
             for ans in replies[-3:]:
                 lines.append(f"  - {ans[:400]}")
-        return "\n".join(lines)
+        return "\n".join(lines + review_continuity_send_back_lines(ctx.get("send_back_feedback")))
 
     def _review_history_records(self, task: Task) -> list[dict]:
         """Tolerant parse of ``task.context["review_history"]`` into a list
