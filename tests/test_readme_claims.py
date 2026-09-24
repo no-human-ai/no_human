@@ -2042,11 +2042,11 @@ CITATION_TABLE = (
     ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1277", "vcs/git.py",
      '"git", "fetch"'),
     ("security.md", ":GitRepo.fetch:1657", "vcs/git.py", '["fetch", remote]'),
-    ("security.md", "cli/commands.py:merge_stack_run:3206", "cli/commands.py",
+    ("security.md", "cli/commands.py:merge_stack_run:3220", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:5657", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5671", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:3176", "cli/commands.py",
+    ("security.md", ":merge_stack_run:3190", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:PYPI_JSON_URL:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:DISABLE_ENV_VAR:57", "updates.py", "DISABLE_ENV_VAR"),
@@ -2100,10 +2100,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:LanguageServerClient.__init__:65-69", "history/extractor.py",
      'host: str = "127.0.0.1"'),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:8331",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8345",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8482", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8360", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:8496", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8374", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -2118,7 +2118,7 @@ CITATION_TABLE = (
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
     # docs/WINDOWS.md
-    ("WINDOWS.md", "cli/commands.py:_try_kill:7713", "cli/commands.py", "signal.SIGKILL"),
+    ("WINDOWS.md", "cli/commands.py:_try_kill:7727", "cli/commands.py", "signal.SIGKILL"),
 )
 
 assert len(CITATION_TABLE) >= 20, (

@@ -1732,7 +1732,14 @@ FROZEN_FILE_LINES = {
     # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
     # mergeability as its own not-landable category (summary line and the
     # --yes skip message) instead of counting it as landable.
-    "cli/commands.py": 9267,
+    # 9267 -> 9281 (+14): `task_cancel._go`'s unconfirmed-cancel branch no
+    # longer withdraws the stop flag it raised — clearing it there destroyed
+    # the only cooperative signal a live-in-another-process attempt could
+    # still observe, leaving a cancelled task running unaware and opening its
+    # own PR. Replaced the false "no live session can exist here" comment
+    # with the corrected ordering rationale. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 9281,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
