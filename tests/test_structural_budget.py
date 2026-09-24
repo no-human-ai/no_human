@@ -1512,7 +1512,12 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25039 -> 25047 (+8): `_park_quota` now stamps the park blocker with a
+    # `"reset_exact"` field alongside the existing `"auth_profile"` /
+    # `"infra"` fields, telling `scheduler.py` whether the parked wall is
+    # the quota provider's own reset time or the self-correcting fallback
+    # hour (issue #431). Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25078,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -2481,7 +2486,20 @@ FROZEN_FILE_LINES = {
     # additions. Measured on this tree with the scanner below: actual 3253,
     # which is what this entry froze at this point. Later entries would
     # move it further.
-    "core/scheduler.py": 3253,
+    # 3253 -> 3316 (+63): dated-reset wall tracking (issue #431) --
+    # `_quota_wall_exact` threaded through `_read_quota_parks` and the park
+    # re-entry path, plus the one-task probe mechanism (`_quota_probe_id` /
+    # `_quota_probe_armed`) that arms when a *fallback* (guessed) wall for
+    # the *active* profile lapses, caps dispatch to a single task while
+    # armed, and disarms (crash-safe, in `finally`) once the probe
+    # finishes.
+    # 3316 -> 3327 (+11): gate the dispatch cap on `_quota_probe_id` being
+    # set (a probe already outstanding), not merely re-derived from
+    # `max_workers - len(inflight)` each tick -- the prior formula let a
+    # SECOND task dispatch into the same unverified wall on any tick that
+    # landed before the first probe returned. Measured on this tree with
+    # the scanner below.
+    "core/scheduler.py": 3327,
 }
 
 

@@ -10,7 +10,7 @@
 | Category | Route | Notify |
 |----------|-------|--------|
 | `TRANSIENT_INFRA` | auto-retry (max 2), then escalate | silent until exhausted |
-| `QUOTA` | `paused_quota`; watcher resumes on refresh. A billing wall pauses the whole pool until the reset (a dead SDK session parks only its own task — the pool's response to those is the 3-strike infra breaker); a restarted server re-reads the newest park for its own auth profile and keeps honouring that wall (`nh auth use <other>` + restart is the way past it) | silent |
+| `QUOTA` | `paused_quota`; watcher resumes on refresh. A billing wall pauses the whole pool until the reset (a dead SDK session parks only its own task — the pool's response to those is the 3-strike infra breaker); a restarted server re-reads the newest park for its own auth profile and keeps honouring that wall (`nh auth use <other>` + restart is the way past it). A dated reset ("resets Sep 8 at 10am (…)") parses up to 8 days out, vs. 6 hours for an undated one; when the pool only guessed the wall's reset (the 6-hour fallback hour, not a parsed time), the lapse dispatches a single probe task instead of `max_workers` at once, repeating per lapse until a probe finds the wall open (issue #431) | silent |
 | `DEPENDENCY_WAIT` | `blocked` + wake condition; watcher polls | silent |
 | `MISSING_ACCESS` | escalate immediately | **now** |
 | `AMBIGUITY` | `awaiting_input`; ask ONE question | **now** |

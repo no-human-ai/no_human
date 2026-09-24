@@ -12152,6 +12152,14 @@ class Orchestrator:
             # task's attempt but is not a billing wall — it arms no pool
             # clock and corroborates no other task's bare-shape death.
             "infra": bool(getattr(exc, "infra", False)),
+            # Whether `wake_check_at` above is the wall's OWN reset time
+            # (caller-supplied or parsed by `parse_quota_reset`) or the
+            # self-correcting fallback hour (`QuotaExhausted.reset_exact`).
+            # The scheduler reads this to decide whether the pool may resume
+            # at full width when the cooldown lapses, or must send a single
+            # probe task first — a guessed wall is not evidence the real one
+            # is still up (issue #431).
+            "reset_exact": bool(getattr(exc, "reset_exact", False)),
         })
         # Columns only (blocker, wake_check_at): `update_task` would rewrite
         # the whole context blob from this in-memory copy and drop whatever
