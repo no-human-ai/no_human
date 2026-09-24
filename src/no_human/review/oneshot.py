@@ -57,7 +57,7 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -74,7 +74,7 @@ from ..config import (
 from ..core.role_backend_settings import effective_role_backend
 from ..core.runtime import assert_task_backend_usable
 from ..core.task import Task
-from ..review.diff_coverage import DiffCoverageError, budget_diff
+from ..review.diff_coverage import DiffCoverageError, budget_diff, split_generated
 from ..review.reviewer import _DIFF_CAP, AdversarialReviewer, ReviewDecision, ReviewerUnavailable
 from ..testing import tamper_guard
 from ..testing.runner import TamperCheckUnavailable, tamper_check_between
@@ -138,6 +138,12 @@ class GateResult:
     reviewer_backend: str = "claude"
     reviewer_model: str = ""
     reviewer_backend_is_default: bool = True
+    # `split_generated`'s exclusion, carried through for `render_markdown` to
+    # state — never used to narrow the tamper guard, which runs on refs and
+    # never sees this diff text at all (see the cap check below).
+    generated_excluded_chars: int = 0
+    generated_excluded_paths: list[str] = field(default_factory=list)
+    generated_excluded_rows: dict[str, int] = field(default_factory=dict)
 
 
 def _no_prompt_env() -> dict[str, str]:
@@ -600,9 +606,17 @@ async def run_gate(
     # billed) at all, naming which changed files would have lost patch
     # content, so this must be exit 2 ("could not run"), never exit 1 with
     # an empty or partial checklist.
-    if len(diff) > _DIFF_CAP:
+    # Generated, hash-verified patches (`RELEASE_MANIFEST.txt`) carry nothing
+    # for a verdict to depend on — the File inventory CI job checks them by
+    # hash, never by reading the diff — so they are dropped from what the
+    # budget MEASURES before the cap check below. This never touches the
+    # tamper guard (a separate git walk over refs, below) or the diff handed
+    # to the reviewer's own `_bounded_override_diff` ledger.
+    split = split_generated(diff)
+    budgeted = split.budgeted
+    if len(budgeted) > _DIFF_CAP:
         try:
-            _, would_cut = budget_diff(diff, _DIFF_CAP)
+            _, would_cut = budget_diff(budgeted, _DIFF_CAP)
         except DiffCoverageError:
             would_cut = []
         cut_note = (
@@ -610,11 +624,16 @@ async def run_gate(
             + ", ".join(would_cut[:10])
             + (f" (+{len(would_cut) - 10} more)" if len(would_cut) > 10 else "")
         ) if would_cut else ""
+        excl_note = (
+            f" ({split.excluded_chars:,} characters of generated, "
+            "hash-verified content excluded from the budget: "
+            + ", ".join(split.excluded_paths) + ")"
+        ) if split.excluded_paths else ""
         raise GateUnavailable(
-            f"the diff is {len(diff):,} characters, over the single-turn "
+            f"the diff is {len(budgeted):,} characters, over the single-turn "
             f"review cap of {_DIFF_CAP:,} characters — refusing rather than "
             "construct and bill a reviewer that would only see a truncated "
-            "prefix of the change" + cut_note
+            "prefix of the change" + excl_note + cut_note
         )
 
     try:
@@ -654,7 +673,7 @@ async def run_gate(
         # real citation-backed finding to a pass. See `_materialized_head`.
         with _materialized_head(repo_path, after_ref) as review_repo_path:
             decision = await reviewer.review(
-                task, repo_path=review_repo_path, diff_override=diff,
+                task, repo_path=review_repo_path, diff_override=budgeted,
                 before_ref=before_ref,
             )
     except ReviewerUnavailable as exc:
@@ -714,6 +733,9 @@ async def run_gate(
         reviewer_backend=role_backend["backend"],
         reviewer_model=role_backend["model"],
         reviewer_backend_is_default=role_backend["is_default"],
+        generated_excluded_chars=split.excluded_chars,
+        generated_excluded_paths=split.excluded_paths,
+        generated_excluded_rows=split.excluded_rows,
     )
 
 
@@ -771,6 +793,13 @@ def render_markdown(result: GateResult) -> str:
     lines.append(
         f"**Reviewer backend:** `{result.reviewer_backend}`{model_suffix}{override_note}"
     )
+    for path in result.generated_excluded_paths:
+        rows = result.generated_excluded_rows.get(path, 0)
+        lines.append(
+            f"- {path} re-pinned, {rows} rows — generated and hash-verified "
+            f"by CI, excluded from the {_DIFF_CAP:,}-char diff budget "
+            f"({result.generated_excluded_chars:,} chars)"
+        )
     if result.truncated:
         lines.append(
             f"**⚠ diff exceeded the {_DIFF_CAP:,}-char single-turn review "

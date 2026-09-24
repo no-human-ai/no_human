@@ -10,12 +10,23 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from ..vcs.derived_conflict import DERIVED_ARTEFACTS
 from .lint_evidence import unquote_git_path
 
 
 TRUSTED_COVERAGE_EXCLUSIONS: frozenset[str] = frozenset()
+
+#: Paths EXCLUDED FROM THE DIFF BUDGET only — never from the tamper guard,
+#: never from `TRUSTED_COVERAGE_EXCLUSIONS`, never from what CI verifies.
+#: Exact repo-root paths, never a glob or a basename: `docs/RELEASE_MANIFEST.
+#: txt` must still be counted in full. Same doctrine as `derived_conflict.
+#: DERIVED_ARTEFACTS` and `pr_watcher._GENERATED_LEDGERS` — regenerated from
+#: the tree by a command, hash-verified by CI, nothing in it for a diff
+#: reader to judge — and seeded from the first so the repo keeps ONE list of
+#: "regenerated, hash-verified" rather than a second copy that can drift.
+BUDGET_EXEMPT_GENERATED: frozenset[str] = frozenset(DERIVED_ARTEFACTS)
 _COVERAGE_NOTE = (
     "\nDIFF COVERAGE — these changed-file patches were cut by the per-file "
     "budget. Inspect every listed path with read/search tools before reaching "
@@ -176,6 +187,98 @@ def budget_diff(
     if len(rendered) > cap:
         raise DiffCoverageError("bounded diff exceeded its cap after rendering")
     return rendered, cut_paths
+
+
+@dataclass(frozen=True)
+class GeneratedSplit:
+    """What `split_generated` removed from a diff before the budget sees it.
+
+    `budgeted` is the text the caller should measure against the diff cap and
+    hand to the reviewer. `excluded_chars`/`excluded_paths`/`excluded_rows`
+    are for reporting the exclusion, never for narrowing anything else — the
+    tamper guard and `TRUSTED_COVERAGE_EXCLUSIONS` never see this split.
+    """
+
+    budgeted: str
+    excluded_chars: int
+    excluded_paths: list[str]
+    excluded_rows: dict[str, int]
+
+
+# A manifest row is `<sha256>  <path>`; a changed row shows as one `-` line
+# and/or one `+` line. `---`/`+++` are patch headers, not rows, and must be
+# skipped before this matches.
+_ROW_LINE = re.compile(r"^[+-](.*)$")
+
+
+def _generated_rows(chunk: str) -> int:
+    """Distinct manifest entries a hunk adds, removes, or changes — once each.
+
+    A re-pin (sha changes on an existing path) shows as one `-` line and one
+    `+` line for the SAME path; counting lines would double it. Keyed on the
+    row's last whitespace-separated token (the path), added/removed sides
+    share one set, so a re-pinned path counts once.
+    """
+    entries: set[str] = set()
+    for line in chunk.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        match = _ROW_LINE.match(line)
+        if not match:
+            continue
+        body = match.group(1).strip()
+        if not body:
+            continue
+        entries.add(body.rsplit(None, 1)[-1])
+    return len(entries)
+
+
+def split_generated(raw: str) -> GeneratedSplit:
+    """Remove `BUDGET_EXEMPT_GENERATED` patches from `raw` before it is budgeted.
+
+    Every allow-listed path present as its own `diff --git` chunk is dropped;
+    everything else — the prefix and every other chunk — is rejoined verbatim
+    in its original order, so `budgeted` is still a well-formed diff that
+    `budget_diff` can bound if it is still over cap. This is an ALLOW-LIST
+    match on the exact repo-root path (see `BUDGET_EXEMPT_GENERATED`'s
+    docstring): a path merely shaped like an entry (`docs/RELEASE_MANIFEST.
+    txt`) or any other generated file not on the list is never dropped.
+
+    Fails open on any parse problem — the same direction this module already
+    fails in: if the diff cannot be split into per-file chunks, or nothing on
+    the allow-list is present, `raw` comes back unchanged with zero exclusion.
+    Also fails open when the split would leave nothing to budget (a
+    manifest-only diff): `AdversarialReviewer.review` treats a falsy
+    `diff_override` as "no override" and silently recomputes an uncapped diff
+    itself, so an empty `budgeted` must never be returned — a manifest-only
+    change is small by construction, so counting it whole costs nothing.
+    """
+    try:
+        prefix, chunks = _split(raw)
+        paths = [_patch_path(chunk) for chunk in chunks]
+    except DiffCoverageError:
+        return GeneratedSplit(raw, 0, [], {})
+
+    excluded_paths: list[str] = []
+    excluded_rows: dict[str, int] = {}
+    excluded_chars = 0
+    kept_chunks: list[str] = []
+    for path, chunk in zip(paths, chunks):
+        if path in BUDGET_EXEMPT_GENERATED:
+            excluded_paths.append(path)
+            excluded_rows[path] = _generated_rows(chunk)
+            excluded_chars += len(chunk)
+        else:
+            kept_chunks.append(chunk)
+
+    if not excluded_paths:
+        return GeneratedSplit(raw, 0, [], {})
+
+    budgeted = prefix + "".join(kept_chunks)
+    if not budgeted.strip():
+        return GeneratedSplit(raw, 0, [], {})
+
+    return GeneratedSplit(budgeted, excluded_chars, excluded_paths, excluded_rows)
 
 
 # `\w` is Unicode by default in Python and is a strict superset of
