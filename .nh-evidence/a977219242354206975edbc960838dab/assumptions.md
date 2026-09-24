@@ -1,6 +1,8 @@
 # Assumptions
 
-_Harness-captured record for task `a9772192`, commit `c4f5c983a92b6c2b533dad9a23bd457925c2099e` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `a9772192`, commit `0f6ef66a679e0d333832ab0aeff3fa36b56e755a` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+> ⚠️ **Unresolved:** You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message ('default' subscription)
 
 <details><summary>⚠️ 2 assumptions made on your behalf — verify at review</summary>
 

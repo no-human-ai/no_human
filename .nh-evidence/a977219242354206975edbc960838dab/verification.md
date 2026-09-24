@@ -1,106 +1,106 @@
 # How I verified this — full log
 
-_Harness-captured record for task `a9772192`, commit `c4f5c983a92b6c2b533dad9a23bd457925c2099e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `a9772192`, commit `0f6ef66a679e0d333832ab0aeff3fa36b56e755a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q -n 4 tests/test_approve_merge.py -k "conventional or redaction" 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd uv run pytest -q tests/test_approve_merge.py -k "conventional or whitespace_only_description or composed_subject or redaction_refusal" 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-....                                                                     [100%]
-4 passed in 20.53s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd
+Installed 73 packages in 457ms
+.....                                                                    [100%]
+5 passed, 73 deselected in 13.27s
 ```
 
-- `timeout 580 uv run pytest -q -n 4 \   tests/test_approve_merge.py \   tests/test_approve_merge_identity_repro.py \   tests/test_pr_closed_on_completion.py \   tests/test_gate_at_the_act.py \   tests/test_a [... 64 of 407 characters omitted from the middle ...] _satisfied_landing.py tests/test_landed_override.py \   tests/test_merge_policy_wiring.py tests/test_structural_budget.py 2>&1 | tail -100`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd uv run pytest -q tests/test_approve_merge.py 2>&1 | tail -15`
 
 ```
-(eval):1: command not found: timeout
-```
-
-- `uv run pytest -q -n 4 \   tests/test_approve_merge.py \   tests/test_approve_merge_identity_repro.py \   tests/test_pr_closed_on_completion.py \   tests/test_gate_at_the_act.py \   tests/test_approve.py tests/test_approve_ready_cli.py \   tests/test_already_satisfied_landing.py tests/test_landed_override.py \   tests/test_merge_policy_wiring.py tests/test_structural_budget.py 2>&1 | tail -120`
-
-```
-E       AssertionError: merge FAILED at step 'preconditions':
-E         refused: squash subject 'Fix the thing' is not Conventional Commits v1.0.0 
-E         (missing the ': ' separator after a type). Nothing was pushed. Fix the task 
-E         title with `nh task retitle 8d35c96f99ac4349af13a71e1e8be4bf "fix(scope): …"` 
-E         and re-run `nh approve`.
-E         Approval recorded; task remains awaiting_approval. Fix the issue and re-run `nh 
-E         approve`.
+config=land_env.config,
+        )
+        assert not result.ok
+>       assert result.step == "verify"
+E       AssertionError: assert 'preconditions' == 'verify'
 E         
-E       assert 1 == 0
-E        +  where 1 = <Result SystemExit(1)>.exit_code
+E         - verify
+E         + preconditions
 
 tests/test_approve_merge.py:1246: AssertionError
------------------------------- Captured log call --------------------------
-[... 6,218 of 7,357 characters omitted from the middle ...]
-tests/test_approve_merge.py::test_merge_lock_released_after_success_and_after_failure
-FAILED tests/test_approve_merge.py::test_cli_approve_prints_the_gate_that_ran
-FAILED tests/test_approve_merge.py::test_cli_approve_marks_done_with_landed_sha
-FAILED tests/test_approve_merge.py::test_approve_unlanded_pr_still_merges_and_probe_says_no
-FAILED tests/test_approve_merge.py::test_api_approve_marks_done_with_landed_sha
-7 failed, 282 passed in 61.25s (0:01:01)
+=========================== short test summary info ============================
+FAILED tests/test_approve_merge.py::test_full_gate_failure_names_the_failing_test
+FAILED tests/test_approve_merge.py::test_full_gate_passing_run_still_lands - ...
+FAILED tests/test_approve_merge.py::test_verify_step_failure_still_head_capped
+3 failed, 75 passed in 95.35s (0:01:35)
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd uv run pytest -q tests/test_approve_merge_identity_repro.py tests/test_pr_closed_on_completion.py tests/test_merge_policy_wiring.py -k "land_task_is_referenced_only or approve_merge_identity or pr_closed" 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+................                                                         [100%]
+16 passed, 22 deselected in 26.47s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd uv run pytest -q tests/test_approve_merge_identity_repro.py tests/test_pr_closed_on_completion.py tests/test_merge_policy_wiring.py tests/test_task_retitle.py tests/test_git.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................................................................       [100%]
+66 passed in 49.36s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd uv run pytest -q tests/test_approve_merge.py tests/test_approve_merge_identity_repro.py tests/test_pr_closed_on_completion.py tests/test_merge_policy_wiring.py tests/test_task_retitle.py tests/test_git.py tests/test_approve_ready_cli.py -n 4 2>&1 | tail -25`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 43%]
+........................................................................ [ 87%]
+.....................                                                    [100%]
+165 passed in 73.52s (0:01:13)
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd echo "current def test_ count in test_approve_merge.py:" grep -c "^def test_" tests/test_approve_merge.py echo "at b [... 96 of 439 characters omitted from the middle ...]  grep -c "^def test_" echo "collected count via pytest:" uv run pytest --collect-only -q tests/test_approve_merge.py 2>/dev/null | tail -3`
+
+```
+current def test_ count in test_approve_merge.py:
+69
+at be7140cb4 (pre-fix baseline, before cfc15cee7):
+62
+collected count via pytest:
+tests/test_approve_merge.py::test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env
+
+78 tests collected in 0.84s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/a977219242354206975edbc960838dab.8407.e1b2f8fd git worktree list | head -3 git show be7140cb4:tests/test_approve_merge.py > /tmp/baseline_test_approve_merge.py uv  [... 89 of 432 characters omitted from the middle ...]  diff approve_merge.py cfc15cee7..HEAD (guard section only) ===" git diff cfc15cee7 HEAD -- src/<redacted>/vcs/approve_merge.py | head -60`
+
+```
+/Users/eyalgolan/git/<redacted>-public                                                                                     f85bf64b5 [main]
+/private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/wt-562  9f38a1c1c (detached HEAD)
+/private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/wt-563  2d44289c3 (detached HEAD)
+baseline_test_approve_merge.py::test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env
+
+71 tests collected in 0.79s
+=== diff approve_merge.py cfc15cee7..HEAD (guard section only) ===
+diff --git a/src/<redacted>/vcs/approve_merge.py b/src/<redacted>/vcs/approve_merge.py
+index 758400f
+[... 2,166 of 3,305 characters omitted from the middle ...]
+ash
+-    # message's first line is built from the task title verbatim (step 5
+-    # below: `redact_for_publish(task_title)`, with no `commit_subject()`
+-    # external_id/prefix composition — that only happens for the per-attempt
+-    # in-branch commit and the PR title, both of which step 5 discards), and
++    # message's first line is built from THIS FUNCTION's `task_title`
++    # parameter verbatim (step 5 below: `redact_for_publish(task_title)`) —
 ```  
-  _excerpt - 7,373 characters of output in total_
-
-- `uv run pytest -q -n 4 \   tests/test_approve_merge.py \   tests/test_approve_merge_identity_repro.py \   tests/test_pr_closed_on_completion.py \   tests/test_gate_at_the_act.py \   tests/test_approve.py tests/test_approve_ready_cli.py \   tests/test_already_satisfied_landing.py tests/test_landed_override.py \   tests/test_merge_policy_wiring.py tests/test_structural_budget.py 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 24%]
-........................................................................ [ 49%]
-........................................................................ [ 74%]
-........................................................................ [ 99%]
-.                                                                        [100%]
-289 passed in 81.65s (0:01:21)
-```
-
-- `uv run pytest -q -n 4 tests/test_merge_policy_wiring.py -k "test_land_task_is_referenced_only_by_cli_and_api" 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-.                                                                        [100%]
-1 passed in 66.92s (0:01:06)
-```
-
-- `\ echo "=== repro test check (unfixed vs fixed already applied, just confirm test exists and passes) ===" && \ uv run pytest -q -n 4 tests/test_approve_merge.py::test_non_conventional_subject_refuses_before_any_push tests/test_approve_merge.py::test_conventional_subject_lands_normally tests/test_git.py tests/test_task_retitle.py 2>&1 | tail -30`
-
-```
-=== repro test check (unfixed vs fixed already applied, just confirm test exists and passes) ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-..............................                                           [100%]
-30 passed in 4.40s
-```
-
-- `\ uv run pytest -q -n 4 tests/test_approve_merge.py \   tests/test_approve_merge_identity_repro.py \   tests/test_pr_closed_on_completion.py \   tests/test_gate_at_the_act.py \   tests/test_approve.py test [... 102 of 445 characters omitted from the middle ...] \   tests/test_merge_policy_wiring.py tests/test_structural_budget.py \   tests/test_git.py tests/test_task_retitle.py \   2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 22%]
-........................................................................ [ 45%]
-........................................................................ [ 68%]
-........................................................................ [ 90%]
-.............................                                            [100%]
-317 passed in 47.71s
-```
+  _excerpt - 3,347 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
