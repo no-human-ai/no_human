@@ -1740,9 +1740,14 @@ FROZEN_FILE_LINES = {
     # command (`profile_resolve.resolve_test_cmd`) and threads it through as
     # `land_task(..., test_cmd=gate_cmd)`, so the merge gate's FULL run uses
     # the repo's own `npm test`/etc. instead of always forcing `python -m
-    # pytest`. Measured on this merged tree with the scanner below
-    # (`len(Path(...).read_text().splitlines())` agrees: 9257).
-    "cli/commands.py": 9257,
+    # pytest`.
+    # 9257 -> 9274 (+17): merged with origin/main, which independently added
+    # unknown-mergeability handling to `nh approve --ready` (its own
+    # not-landable category, summary line, and the `--yes` skip message)
+    # instead of counting it as landable. Measured on this merged tree with
+    # the scanner below (`len(Path(...).read_text().splitlines())` agrees:
+    # 9274).
+    "cli/commands.py": 9274,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
