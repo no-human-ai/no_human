@@ -5280,10 +5280,10 @@ async def _approve_go_ready(config, assume_yes, land_one):
     annotated with its LIVE mergeability against its current base
     (`merge: clean|clean (derived)|CONFLICT|unknown`, evaluated fresh on
     every call — see `_approve_find_ready`/`vcs/landability.py`); with
-    `--yes`, land the non-conflicting ones one at a time through `land_one`
+    `--yes`, land the `clean`/`clean (derived)` ones one at a time via `land_one`
     (the same procedure a plain `nh approve <task_id>` uses), stopping at
-    the first hard failure. A task whose branch currently CONFLICTS with
-    its base is listed (never hidden) but is NOT handed to `land_one` —
+    the first hard failure. A task that CONFLICTS with its base, or whose
+    mergeability is unknown, is listed (never hidden) but NOT landed —
     nothing is rebased or auto-resolved on its behalf; it is printed as
     skipped so the operator sees it needs a rebase before re-running,
     instead of burning an approve attempt on a squash known to fail at the
@@ -5306,10 +5306,11 @@ async def _approve_go_ready(config, assume_yes, land_one):
             superseded_by[r.task.id] = await _superseding_successors(store, r.task.id)
 
         conflicted = [r for r in ready if r.landability.state == "conflict"]
+        unknown = [r for r in ready if r.landability.state not in {"clean", "derived", "conflict"}]
         superseded = [r for r in ready
-                      if r.landability.state != "conflict" and superseded_by[r.task.id]]
+                      if r.landability.state in {"clean", "derived"} and superseded_by[r.task.id]]
         landable = [r for r in ready
-                    if r.landability.state != "conflict" and not superseded_by[r.task.id]]
+                    if r.landability.state in {"clean", "derived"} and not superseded_by[r.task.id]]
 
         for r in ready:
             note = f" · {r.advisory}" if r.advisory else ""
@@ -5324,16 +5325,26 @@ async def _approve_go_ready(config, assume_yes, land_one):
             )
 
         if not assume_yes:
-            if conflicted or superseded:
-                console.print(
-                    f"\n{len(landable)} task(s) ready to land; "
-                    f"{len(conflicted)} task(s) pass the quality rules but "
-                    "do NOT merge into their current base right now — "
-                    "rebase before approving; "
-                    f"{len(superseded)} task(s) are superseded by a later "
-                    "follow-up task — approve those individually with "
-                    "--force-superseded if they should still land."
-                )
+            if conflicted or superseded or unknown:
+                msg = [f"\n{len(landable)} task(s) ready to land;"]
+                if conflicted:
+                    msg.append(
+                        f"{len(conflicted)} task(s) pass the quality rules but "
+                        "do NOT merge into their current base right now — "
+                        "rebase before approving;"
+                    )
+                if unknown:
+                    msg.append(
+                        f"{len(unknown)} task(s) have unknown mergeability "
+                        "and cannot be auto-landed;"
+                    )
+                if superseded:
+                    msg.append(
+                        f"{len(superseded)} task(s) are superseded by a later "
+                        "follow-up task — approve those individually with "
+                        "--force-superseded if they should still land."
+                    )
+                console.print(" ".join(msg).rstrip(";"))
                 if landable:
                     console.print(
                         "re-run with --yes to land the ready one(s) one at "
@@ -5341,7 +5352,7 @@ async def _approve_go_ready(config, assume_yes, land_one):
                     )
             else:
                 console.print(
-                    f"\n{len(ready)} task(s) merge-ready — re-run with "
+                    f"\n{len(landable)} task(s) merge-ready — re-run with "
                     "--yes to land them one at a time."
                 )
             return
@@ -5360,13 +5371,19 @@ async def _approve_go_ready(config, assume_yes, land_one):
         for r in ready:
             t, pr_url, passed, total, advisory = (
                 r.task, r.pr_url, r.rules_passed, r.rules_total, r.advisory)
-            if r.landability.state == "conflict":
-                console.print(
-                    f"[yellow]not landed[/] {t.id[:8]} — conflicts with "
-                    f"{r.landability.base_ref or 'its base'} in "
-                    f"{_format_conflict_paths(r.landability.conflicts)}; "
-                    "rebase and re-run"
-                )
+            if r.landability.state not in {"clean", "derived"}:
+                if r.landability.state == "conflict":
+                    console.print(
+                        f"[yellow]not landed[/] {t.id[:8]} — conflicts with "
+                        f"{r.landability.base_ref or 'its base'} in "
+                        f"{_format_conflict_paths(r.landability.conflicts)}; "
+                        "rebase and re-run"
+                    )
+                else:
+                    console.print(
+                        f"[yellow]not landed[/] {t.id[:8]} — mergeability is "
+                        f"{r.landability.state} (could not verify against base)"
+                    )
                 continue
             if superseded_by[t.id]:
                 names = ", ".join(s.id[:8] for s in superseded_by[t.id])
@@ -5597,11 +5614,11 @@ async def _approve_go_single(config, task_id, land_one, force_superseded=False):
                    "TASK_ID. Combine with --yes to land the ones that are "
                    "both quality-ready and currently mergeable.")
 @click.option("--yes", "assume_yes", is_flag=True, default=False,
-              help="With --ready, land the non-conflicting listed tasks "
+              help="With --ready, land the listed tasks whose merge is clean or clean (derived) "
                    "sequentially through the same approve path as a plain "
                    "`nh approve <task_id>`, stopping at the first failure. "
-                   "A task whose branch currently conflicts with its base "
-                   "is listed but skipped — never auto-resolved or "
+                   "A task that conflicts with its base, or whose mergeability "
+                   "is unknown, is listed but skipped — never auto-resolved or "
                    "auto-rebased. Without --yes, --ready only lists — "
                    "nothing lands.")
 @click.option("--landed", "landed_sha", default=None,
