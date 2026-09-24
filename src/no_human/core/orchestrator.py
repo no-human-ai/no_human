@@ -44,7 +44,7 @@ from ..agent.claude_backend import (
     dewrap as _dewrap,
 )
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned, is_outside_repo
-from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
+from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook, review_continuity_send_back_lines
 from ..agent.verification_receipts import KINDS
 from ..blockers import (
     CONSUMED_HUMAN_PROVENANCE,
@@ -12303,7 +12303,7 @@ class Orchestrator:
             lines.append("  Operator answers (binding — these settle what they address):")
             for ans in replies[-3:]:
                 lines.append(f"  - {ans[:400]}")
-        return "\n".join(lines)
+        return "\n".join(lines + review_continuity_send_back_lines(ctx.get("send_back_feedback")))
 
     def _review_history_records(self, task: Task) -> list[dict]:
         """Tolerant parse of ``task.context["review_history"]`` into a list
