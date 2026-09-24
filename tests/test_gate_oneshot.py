@@ -99,6 +99,54 @@ def _make_repo_with_github_origin(tmp_path, owner="acme", repo_name="widgets", n
     return repo, bare
 
 
+def _make_shallow_repo_with_github_origin(tmp_path, owner="acme", repo_name="widgets", name="repo"):
+    """Like `_make_repo_with_github_origin`, but `repo` is a SHALLOW clone
+    (`git clone --depth 1`) of a `bare` with several commits of history —
+    the shape that triggers git's own "source repository is shallow,
+    ignoring --local" downgrade inside `_materialized_head`'s throwaway
+    clone. A non-shallow `repo_path` gets full access to every object in its
+    store via `--shared`'s alternates regardless of ref reachability; a
+    shallow one instead gets an ordinary ref-walking transfer, which drops
+    anything reachable only via `FETCH_HEAD` — exactly what PR mode's
+    refless `fetch` leaves behind. `bare` needs more than one commit or a
+    depth-1 clone of it is not shallow at all (no boundary to draw)."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+    seed = tmp_path / f"{name}_seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.email", "t@example.com")
+    _git(seed, "config", "user.name", "t")
+    for i in range(5):
+        (seed / "a.txt").write_text(f"orig {i}\n")
+        _git(seed, "add", "a.txt")
+        _git(seed, "commit", "-m", f"commit {i}")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    github_url = f"https://github.com/{owner}/{repo_name}.git"
+    repo = tmp_path / name
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{bare}", str(repo)],
+        check=True, capture_output=True,
+    )
+    assert _git_out(repo, "rev-parse", "--is-shallow-repository") == "true", (
+        "test setup bug: `repo` must be a genuinely shallow clone for this "
+        "to exercise the shallow-downgrade defect"
+    )
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    # Rewrite `origin`'s URL to the fake github one `_origin_owner_repo`
+    # checks a `--pr` URL against, then redirect it right back to `bare` via
+    # `insteadOf` (same trick as `_make_repo_with_github_origin`) so every
+    # real git operation still resolves on disk, no network touched.
+    _git(repo, "config", "remote.origin.url", github_url)
+    _git(repo, "config", f"url.{bare}.insteadOf", github_url)
+    _git(repo, "remote", "set-head", "origin", "-a")
+    return repo, bare
+
+
 def _add_test_file(repo, tests=3):
     body = "\n".join(
         f"def test_{i}():\n    assert {i} == {i}\n" for i in range(tests)
@@ -355,6 +403,9 @@ def _repo_fingerprint(repo):
 # `head_sha`/`default_branch`, and `runner.py`'s `_git_show`/`_git_files`).
 # `clone`/`checkout` are deliberately absent here: they exist only inside
 # `_materialized_head`'s throwaway temp clone and are checked separately.
+# `fetch` appears both here (PR mode's one real-repo fetch of the PR ref)
+# and, cwd-scoped to the throwaway clone, in `_materialized_head`'s extra
+# by-object-id fetch — also checked separately, above.
 _READ_ONLY_GIT_VERBS = {
     "rev-parse", "merge-base", "diff", "status", "config", "fetch",
     "symbolic-ref", "remote", "ls-tree", "show",
@@ -424,6 +475,18 @@ def _install_fail_closed_git_spy(monkeypatch, *, real_repo: Path):
                 f"gate ran `git checkout` against the user's own checkout: {argv}"
             )
             assert "--detach" in argv, f"gate ran a non-detached checkout: {argv}"
+            return
+        if verb == "fetch" and resolved_cwd is not None and resolved_cwd != real_repo:
+            # `_materialized_head`'s extra fetch of `sha` by object id,
+            # issued inside the throwaway clone (not `real_repo`) so a
+            # shallow `real_repo` still carries a refless-fetched fork PR
+            # head into the clone. `real_repo` is only ever this fetch's
+            # SOURCE (argv[-2]) — nothing is written back to it.
+            source = Path(argv[-2]).resolve()
+            assert source == real_repo, (
+                f"gate fetched into the throwaway clone from somewhere "
+                f"other than the user's own checkout: {argv}"
+            )
             return
 
         assert verb in _READ_ONLY_GIT_VERBS, (
@@ -797,6 +860,101 @@ def test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base(tmp_path, monke
         asyncio.run(run_gate(
             repo, pr_url="https://github.com/acme/widgets/pull/17",
         ))
+
+
+# --------------------------------------------------------------------------- #
+# 8b. a fork PR's head, reachable only via a refless fetch, still checks out  #
+# --------------------------------------------------------------------------- #
+
+def test_materialized_head_checks_out_a_commit_reachable_only_via_refless_fetch(tmp_path):
+    """Regression for the fork-PR gate defect: PR mode's `fetch origin
+    refs/pull/<n>/head` (oneshot.py's `_resolve_pr_mode`) is deliberately
+    refless — it leaves the PR head reachable only via `FETCH_HEAD`, never a
+    branch (see module docstring). `_materialized_head` normally sees that
+    commit anyway because `git clone --local --shared`'s alternates give the
+    throwaway clone raw filesystem access to every object in `repo_path`'s
+    store, reachable or not. But when `repo_path` is a shallow repository —
+    the shape of any checkout made with `--depth`, common in CI — git itself
+    downgrades that to an ordinary ref-walking transfer ("source repository
+    is shallow, ignoring --local"), which only copies objects reachable from
+    a ref and so drops the PR head. Before the fix this died with `fatal:
+    unable to read tree (<sha>)`; the fix instead re-fetches `sha` by object
+    id, straight from `repo_path`, into the throwaway clone."""
+    repo, bare = _make_shallow_repo_with_github_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src_shallow1", 901)
+    (pr_src / "fork_only.py").write_text("x = 1\n")
+    _git(pr_src, "add", "fork_only.py")
+    _git(pr_src, "commit", "-m", "fork adds fork_only.py")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/901/head")
+
+    _git(repo, "fetch", "origin", "refs/pull/901/head")
+    sha = _git_out(repo, "rev-parse", "FETCH_HEAD")
+    assert _git_out(repo, "for-each-ref", "--contains", sha) == "", (
+        "test setup bug: the PR head must be unreachable from every ref in "
+        "`repo` for this to exercise the refless-fetch defect"
+    )
+
+    with oneshot._materialized_head(repo, sha) as review_repo:
+        assert _git_out(review_repo, "rev-parse", "HEAD") == sha, (
+            "the throwaway clone must be checked out at the PR head, not "
+            "fail with 'unable to read tree'"
+        )
+        assert (review_repo / "fork_only.py").exists()
+
+
+def test_pr_mode_reviews_a_fork_pr_from_a_shallow_checkout_and_reaches_a_verdict(
+    tmp_path, monkeypatch,
+):
+    """End-to-end acceptance test: `nh gate --pr <url>` must review a PR
+    whose head lives on a fork (reachable in `repo` only via a refless
+    `fetch`, exactly like every external contribution — see module
+    docstring) from a shallow checkout, the shape that turns the missing
+    reachability into `_materialized_head`'s "unable to read tree" defect
+    (see the test above). It must reach a real verdict, and it must do so
+    without creating or moving any ref in the user's own checkout."""
+    repo, bare = _make_shallow_repo_with_github_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src_shallow2", 902)
+    (pr_src / "fork_only.py").write_text("x = 1\n")
+    _git(pr_src, "add", "fork_only.py")
+    _git(pr_src, "commit", "-m", "fork adds fork_only.py")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/902/head")
+
+    _ok_credential(monkeypatch)
+
+    seen = {}
+
+    class _Spy:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            seen["has_pr_file"] = (Path(repo_path) / "fork_only.py").exists()
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Spy)
+
+    fingerprint_before = _repo_fingerprint(repo)
+    refs_before = _git_out(repo, "for-each-ref")
+    import asyncio
+    result = asyncio.run(run_gate(
+        repo, pr_url="https://github.com/acme/widgets/pull/902",
+    ))
+    fingerprint_after = _repo_fingerprint(repo)
+    refs_after = _git_out(repo, "for-each-ref")
+
+    assert result.passed is True, "the gate must reach a real verdict, not refuse"
+    assert seen["has_pr_file"] is True, (
+        "the reviewer must see the fork PR head's real files"
+    )
+    assert fingerprint_before == fingerprint_after, (
+        "reviewing a fork PR must not touch HEAD, the working tree, or any "
+        "local branch in the user's own checkout"
+    )
+    assert refs_before == refs_after, (
+        "reviewing a fork PR must not create or move any ref in the user's "
+        "own checkout"
+    )
 
 
 # --------------------------------------------------------------------------- #
