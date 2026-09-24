@@ -1729,7 +1729,10 @@ FROZEN_FILE_LINES = {
     # that runs the fresh-session reviewer and the tamper guard over the
     # current branch or a GitHub PR with no daemon, no server, and no Store).
     # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    "cli/commands.py": 9250,
+    # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
+    # mergeability as its own not-landable category (summary line and the
+    # --yes skip message) instead of counting it as landable.
+    "cli/commands.py": 9267,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2127,7 +2130,12 @@ FROZEN_FILE_LINES = {
     # alongside RESEND_API_KEY_VAR. Measured on this tree with the scanner
     # below: actual 3689, which is what this entry froze at this point.
     # Later entries would move it further.
-    "config.py": 3689,
+    # 3689 -> 3718 (+29): the `capability_gap.*` defaults in DEFAULT_CONFIG
+    # (enabled=False, sink, dir, endpoint, max_lines, instance_pseudonym,
+    # synthetic) with their explanatory comments — config defaults live in
+    # DEFAULT_CONFIG, not in the module that reads them. Measured on this
+    # tree with the scanner below.
+    "config.py": 3718,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the

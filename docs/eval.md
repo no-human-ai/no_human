@@ -149,9 +149,9 @@ over time; it is the trust signal that matters most.
 ## Reading a bench run: pass^k, escalation latency, and what must not lead
 
 **pass^k: SUPPORTED (yes, not partial).** The bench runner already reruns each
-spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:8314`), with a
-spec-major fan-out (`:bench_run:8465`) and `(task_id, trial)` as the checkpoint
-identity (`:bench_run:8343`) so a resumed multi-trial run cannot double-count a spec.
+spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:8331`), with a
+spec-major fan-out (`:bench_run:8482`) and `(task_id, trial)` as the checkpoint
+identity (`:bench_run:8360`) so a resumed multi-trial run cannot double-count a spec.
 Each trial is its own `BenchScore` (`BenchScore.trial`,
 `src/no_human/eval/northstar.py`). The reliability figure this produces is
 `NorthStarCard.pass_k_rate` — the fraction of specs that passed **every**
@@ -162,7 +162,7 @@ surfaced in the headline as `· pass^{trials} {rate}`
 from the same `per_spec_passes` — no new arithmetic) on each core spec's row
 in the "Per-task" table, present only when `trials > 1` (`pass^1` is
 arithmetically the mean; printing it would read as a second, corroborating
-measurement that does not exist — `tests/test_bench_trials.py:272` pins this).
+measurement that does not exist — `tests/test_bench_trials.py:test_a_single_trial_report_still_refuses_to_print_a_bare_percentage:272` pins this).
 So the deferral branch of this task's acceptance criteria does **not** apply.
 
 The one real caveat is operational, not a missing feature: a multi-trial full

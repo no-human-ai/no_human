@@ -502,7 +502,7 @@ line for it shows `merge: CONFLICT` (never hidden, never auto-resolved) and
 it is excluded from the "ready to land" count and from what `--yes` lands.
 A task whose branch merges cleanly (or whose only conflict is confined to a
 derived artefact `land_task` regenerates at land time) shows `merge: clean`
-and counts as ready. Add `--yes` and it walks the ready (non-conflicted)
+and counts as ready. Add `--yes` and it walks the ready (`merge: clean`)
 tasks through `nh approve <task_id>`'s own procedure — one task at a time,
 in listed order, stopping at the first failure — so every precondition
 `nh approve <task_id>` already enforces (the reviewer PASS above included)

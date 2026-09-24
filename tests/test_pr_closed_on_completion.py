@@ -305,7 +305,7 @@ def test_merge_path_close_behavior_unchanged(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-close-control")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
 

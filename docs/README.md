@@ -7,6 +7,7 @@
 | [verification.md](verification.md) | The gates that stop a broken change, the bounded loop, the limits |
 | [security.md](security.md) | Subscription-auth boundary, the never-merge rule, guards |
 | [TELEMETRY.md](TELEMETRY.md) | The canonical, machine-checked contract for every server-side telemetry event `no_human` can ever send |
+| [CAPABILITY_GAP.md](CAPABILITY_GAP.md) | The opt-in, default-off capability-gap event contract: what a gap is, the closed vocabulary, the two sinks (issue #20) |
 | [INTEGRATIONS_LEGAL.md](INTEGRATIONS_LEGAL.md) | The recorded legal/compliance position for each third-party integration (Codex auth, sourcing, what is unresolved) |
 | [adapters.md](adapters.md) | Intake (TRACKER/GitHub/GitLab), context, VCS, CI backends |
 | [BACKENDS.md](BACKENDS.md) | The three coding backends (`claude`, `codex`, `local`): switching, credentials, per-mode defaults |
