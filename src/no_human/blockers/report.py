@@ -402,6 +402,88 @@ def ci_misconfigured(reason: str, *, goal: str = "") -> Blocker:
     )
 
 
+def diverged_branch_blocker(
+    *,
+    branch: str,
+    local_sha: str,
+    pushed_sha: str,
+    local_only: int,
+    pushed_only: int,
+    merge_base: str | None,
+    detail: str,
+    goal: str = "",
+    resume_branch: str = "",
+    resume_commit: str = "",
+) -> Blocker:
+    """Build the blocker for a rework that cannot be replayed onto its own
+    pushed tip (an automatic reconvergence — see `vcs.reconverge` — was
+    either not applicable or itself failed).
+
+    Unlike `fallback_blocker`, this never leaves a human with nothing
+    actionable: it names both SHAs, says which side carries more work (the
+    exact fact a human needs to decide whether to keep the rework or the
+    pushed tip), and offers a concrete merge command as the first option,
+    not just a label to reason about from scratch.
+    """
+    if local_only > pushed_only:
+        heavier = (
+            f"the rework ({local_sha}) carries more work: {local_only} "
+            f"commit(s) not on the pushed tip, vs. {pushed_only} the "
+            "pushed tip carries that the rework does not"
+        )
+    elif pushed_only > local_only:
+        heavier = (
+            f"the pushed tip ({pushed_sha}) carries more work: "
+            f"{pushed_only} commit(s) not in the rework, vs. {local_only} "
+            "the rework carries that the pushed tip does not"
+        )
+    else:
+        heavier = (
+            f"neither side carries more work: {local_only} commit(s) each "
+            "way"
+        )
+    return Blocker(
+        category=BlockerCategory.NOVEL_UNKNOWN,
+        transient=False,
+        confidence=0.3,
+        root_cause_hypothesis=(
+            f"branch {branch} has diverged from its own pushed tip: local "
+            f"rework is {local_sha}, pushed tip is {pushed_sha}"
+            + (f", merge-base {merge_base}" if merge_base else
+               " (unrelated histories — no common ancestor)")
+            + f"; {heavier}."
+        ),
+        goal=goal,
+        evidence=detail,
+        question=(
+            "The rework cannot be fast-forwarded onto its own pushed tip "
+            "automatically. How should these two lines be reconciled?"
+        ),
+        options=[
+            BlockerOption(
+                label=(
+                    f"Merge the pushed tip into the rework: "
+                    f"git checkout {branch} && git merge {pushed_sha}"
+                )
+            ),
+            BlockerOption(
+                label=(
+                    f"Discard the rework and keep the pushed tip "
+                    f"({pushed_sha}) as-is"
+                )
+            ),
+            BlockerOption(
+                label=(
+                    f"Discard the pushed tip and force the rework "
+                    f"({local_sha}) through by hand"
+                )
+            ),
+        ],
+        resume_branch=resume_branch,
+        resume_commit=resume_commit,
+    )
+
+
 def blocker_prompt_suffix() -> str:
     """Instruction appended to the agent prompt so it can self-report a blocker.
 

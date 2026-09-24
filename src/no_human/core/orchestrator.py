@@ -56,6 +56,7 @@ from ..blockers import (
     BlockerOption,
     blocker_prompt_suffix,
     clear_pending_send_back,
+    diverged_branch_blocker,
     fallback_blocker,
     find_stored_answer,
     human_event,
@@ -145,6 +146,12 @@ from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.recut import already_recut, branch_stem, diverged_state, recut
+from ..vcs.reconverge import (
+    already_reconverged,
+    divergence_summary,
+    is_rework_after_rejection,
+    reconverge,
+)
 from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
@@ -816,7 +823,18 @@ class ReviewedShaMismatch(RuntimeError):
     stamp is required at all). Any other state — an unreadable tip, no
     stamped history, a tip that does not match a stamped pass — refuses to
     push rather than shipping unreviewed code.
+
+    ``blocker`` is optional and set only by ``_recover_diverged_branch``
+    when it has already built a `diverged_branch_blocker` naming both
+    SHAs and a concrete merge option — the handlers below route through
+    that structured blocker instead of the generic `_escalate` fallback
+    when it is present, so a genuine, un-reconvergeable divergence still
+    leaves the human with something actionable instead of bare prose.
     """
+
+    def __init__(self, *args, blocker=None):
+        super().__init__(*args)
+        self.blocker = blocker
 
 
 class BudgetAbort(RuntimeError):
@@ -5883,7 +5901,7 @@ class Orchestrator:
             recut_branch = await self._recover_diverged_branch(task, repo, branch)
         except ReviewedShaMismatch as exc:
             log.error("%s", exc)
-            return await self._escalate(task, str(exc), repo=repo, branch=branch)
+            return await self._escalate_reviewed_sha_mismatch(task, exc, repo, branch)
         if recut_branch != branch:
             branch = recut_branch
             ctx = task.context or {}
@@ -7951,7 +7969,7 @@ class Orchestrator:
             await self.store.update_attempt(
                 attempt_id, status="failed", failure_reason=str(exc),
                 completed_at=_now())
-            return await self._escalate(task, str(exc), repo=repo, branch=branch)
+            return await self._escalate_reviewed_sha_mismatch(task, exc, repo, branch)
 
         # A genuine divergence recovered mid-delivery (see
         # `_reconcile_remote_branch`) rebinds `branch` to a freshly cut,
@@ -12305,6 +12323,56 @@ class Orchestrator:
         """
         return set(self._passing_review_shas_in_order(task))
 
+    async def _reconverge_rework(
+        self, task: Task, repo, branch: str, ctx: dict,
+    ) -> str | None:
+        """Try to rebase a rework-after-rejection `branch` onto its own
+        pushed tip (`vcs.reconverge.reconverge`) so the existing PR gets a
+        fast-forward push instead of hitting the non-ancestor delivery
+        refusal. Returns the (unchanged) branch name on success, or `None`
+        if reconvergence was not attempted or failed — in either case
+        `branch`'s ref is left exactly as it was, so the caller can safely
+        fall through to the pre-existing recut recovery.
+
+        One-shot per branch, same bound `vcs.recut.recut` enforces for
+        itself: success is recorded at `task.context["reconverge"]`
+        (`already_reconverged` reads it) before this is ever tried again on
+        the same branch.
+        """
+        remote_sha = repo.fetch_remote_branch_sha(branch)
+        if remote_sha is None:
+            return None  # unreachable remote mid-check — fail open
+        local_sha = repo.branch_sha(branch)
+        try:
+            result = reconverge(
+                repo, branch=branch, local_sha=local_sha,
+                pushed_sha=remote_sha)
+        except (GitError, ProtectedBranch) as exc:
+            log.warning("reconverge failed for %s: %s", branch, exc)
+            return None
+        merged = await self.store.merge_context(task.id, {
+            "reconverge": [
+                *(ctx.get("reconverge") or []),
+                {
+                    "branch": result.branch,
+                    "from_sha": result.from_sha,
+                    "pushed_sha": result.pushed_sha,
+                    "to_sha": result.to_sha,
+                    "replayed": result.replayed,
+                    "at": _now(),
+                },
+            ],
+        })
+        task.context = merged
+        self.emit(
+            "branch_reconverged",
+            f"{branch}@{local_sha} -> {result.to_sha} "
+            f"(replayed onto pushed tip {remote_sha}, "
+            f"{result.replayed} commit(s))",
+            ok=True,
+        )
+        return result.branch
+
     async def _recover_diverged_branch(
         self, task: Task, repo, branch: str,
     ) -> str:
@@ -12365,14 +12433,35 @@ class Orchestrator:
         if state != "diverged":
             return branch
         ctx = task.context if isinstance(task.context, dict) else {}
+        if (is_rework_after_rejection(ctx, branch)
+                and not already_reconverged(ctx, branch)):
+            reconverged = await self._reconverge_rework(task, repo, branch, ctx)
+            if reconverged is not None:
+                return reconverged
+            # Reconvergence declined or failed — `repo`/`branch` are left
+            # exactly as they were (see `_reconverge_rework`), so falling
+            # through to the pre-existing recut recovery below is safe: it
+            # still lands the work (on a fresh branch name) rather than
+            # leaving this attempt with no route forward.
         if already_recut(ctx, branch):
             remote_sha = repo.fetch_remote_branch_sha(branch)
             local_sha = repo.branch_sha(branch)
+            summary = divergence_summary(repo, local_sha, remote_sha or "")
             raise ReviewedShaMismatch(
                 f"delivery refused: branch {branch} has already been recut "
                 f"once (see task.context['recut']) and has diverged again "
                 f"— local tip {local_sha} vs remote tip {remote_sha} — "
-                f"refusing to recut a second time; a human must decide")
+                f"refusing to recut a second time; a human must decide",
+                blocker=diverged_branch_blocker(
+                    branch=branch, local_sha=local_sha,
+                    pushed_sha=remote_sha or "", local_only=summary.local_only,
+                    pushed_only=summary.pushed_only,
+                    merge_base=summary.merge_base,
+                    detail=(
+                        f"branch {branch} was already recut once for a "
+                        "prior divergence and has diverged again from its "
+                        f"new remote tip {remote_sha}"),
+                    goal=task.title))
         remote_sha = repo.fetch_remote_branch_sha(branch)
         if remote_sha is None:
             return branch  # unreachable remote mid-check — fail open
@@ -12384,10 +12473,20 @@ class Orchestrator:
                 reviewed_sha=reviewed_sha, remote_sha=remote_sha,
             )
         except (GitError, ProtectedBranch) as exc:
+            summary = divergence_summary(repo, reviewed_sha, remote_sha)
             raise ReviewedShaMismatch(
                 f"delivery refused: branch {branch} has diverged from its "
                 f"own pushed tip (remote {remote_sha}, local {reviewed_sha}) "
-                f"and the recovery recut failed: {exc}") from exc
+                f"and the recovery recut failed: {exc}",
+                blocker=diverged_branch_blocker(
+                    branch=branch, local_sha=reviewed_sha,
+                    pushed_sha=remote_sha, local_only=summary.local_only,
+                    pushed_only=summary.pushed_only,
+                    merge_base=summary.merge_base,
+                    detail=(
+                        f"branch {branch} diverged from its own pushed tip "
+                        f"and the automatic recut recovery failed: {exc}"),
+                    goal=task.title)) from exc
         merged = await self.store.merge_context(task.id, {
             "recut": [
                 *(ctx.get("recut") or []),
@@ -12409,6 +12508,18 @@ class Orchestrator:
             ok=True,
         )
         return result.to_branch
+
+    async def _escalate_reviewed_sha_mismatch(self, task, exc, repo, branch):
+        """Shared tail of the two `ReviewedShaMismatch` handlers (mid-attempt
+        divergence in `_run_attempt`, delivery-time in `_finalize`): route
+        through the structured `exc.blocker` `_recover_diverged_branch`
+        already built, or fall back to the generic `_escalate` prose when
+        there isn't one.
+        """
+        if exc.blocker is not None:
+            return await self._raise_blocker(
+                task, exc.blocker, repo=repo, branch=branch)
+        return await self._escalate(task, str(exc), repo=repo, branch=branch)
 
     def _reconcile_remote_branch(
         self, repo, branch: str, target: str, *, human_gated_resume: bool,

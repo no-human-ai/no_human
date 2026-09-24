@@ -1512,7 +1512,19 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25070 -> 25181 (+111): rework-after-rejection reconvergence fix — the
+    # `already_reconverged`/`divergence_summary`/`is_rework_after_rejection`/
+    # `reconverge` imports from the new `vcs/reconverge.py`, the
+    # `ReviewedShaMismatch.blocker` attribute and its docstring, the new
+    # `_reconverge_rework` method (attempts an automatic rebase of the
+    # rework onto its own pushed tip before falling back to recut), the
+    # `is_rework_after_rejection` gate added to `_recover_diverged_branch`,
+    # and the shared `_escalate_reviewed_sha_mismatch` helper the two
+    # `ReviewedShaMismatch` handlers now call (added specifically so
+    # `_run_attempt` and `_finalize` themselves stay at their frozen sizes
+    # below — see those two entries, unchanged). Measured on this tree
+    # with the scanner below.
+    "core/orchestrator.py": 25181,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
