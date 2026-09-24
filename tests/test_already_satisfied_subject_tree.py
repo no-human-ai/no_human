@@ -15,7 +15,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision
 from no_human.review.selfcheck import ChecklistItem
-from no_human.vcs import GitRepo
+from no_human.vcs import GitError, GitRepo, ProtectedBranch
 from no_human.vcs import git as git_module
 
 
@@ -327,7 +327,7 @@ async def test_absent_or_empty_head_sha_is_a_refusal(
     assert phrase in (await store.list_attempts(task.id))[-1]["failure_reason"]
 
 
-@pytest.mark.parametrize("relation", ["behind", "diverged"])
+@pytest.mark.parametrize("relation", ["behind", "diverged", "merge_diverged"])
 async def test_a_diverged_and_a_behind_remote_tip_are_both_refused(
     bare_repo, tmp_path, store, relation
 ):
@@ -343,13 +343,31 @@ async def test_a_diverged_and_a_behind_remote_tip_are_both_refused(
         _git(bare_repo, "commit", "-m", "remote only")
         _git(bare_repo, "push", "origin", branch)
         _git(bare_repo, "reset", "--hard", "HEAD~1")
-    else:
+    elif relation == "diverged":
         _git(bare_repo, "commit", "--amend", "-m", "work (rewritten)")
+    else:
+        # AC4: a MERGE commit on the local head, with the remote tip still
+        # not an ancestor of either side — must still read "diverged", not
+        # "ahead", and must still be refused.
+        _git(bare_repo, "commit", "--amend", "-m", "work (rewritten)")
+        _git(bare_repo, "checkout", "-b", "no-human/unrelated", "main")
+        (bare_repo / "unrelated.txt").write_text("unrelated\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "unrelated work")
+        _git(bare_repo, "checkout", branch)
+        _git(bare_repo, "merge", "--no-ff", "-m", "merge unrelated",
+             "no-human/unrelated")
+
+    remote_before = _git(
+        bare_repo, "ls-remote", "origin", f"refs/heads/{branch}").stdout
 
     outcome, _, reviewer, _ = await _gate(store, tmp_path, bare_repo, branch=branch)
 
     assert outcome.status is TaskStatus.FAILED
     assert reviewer.calls == []
+    remote_after = _git(
+        bare_repo, "ls-remote", "origin", f"refs/heads/{branch}").stdout
+    assert remote_after == remote_before, "a refused claim must never push"
 
 
 async def test_an_unknown_pushed_branch_relation_is_refused(
@@ -367,6 +385,112 @@ async def test_an_unknown_pushed_branch_relation_is_refused(
 
     assert outcome.status is TaskStatus.FAILED
     assert reviewer.calls == []
+
+
+def _push_ahead_branch(bare_repo, branch):
+    """Push `branch`, then commit once more locally without pushing — the
+    remote tip becomes an ancestor of local, i.e. "ahead"."""
+    _git(bare_repo, "checkout", "-b", branch)
+    (bare_repo / "work.txt").write_text("work\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "work")
+    _git(bare_repo, "push", "-u", "origin", branch)
+    (bare_repo / "more.txt").write_text("more\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "more work, not pushed")
+    return GitRepo(bare_repo).head_sha()
+
+
+async def test_a_branch_ahead_of_its_remote_is_fast_forwarded_and_the_claim_accepted(
+    bare_repo, tmp_path, store
+):
+    """AC2: an "ahead" branch is fast-forwarded to the reviewed sha and the
+    claim is accepted -- proven behaviourally against a local bare remote,
+    not a source-text check."""
+    branch = "no-human/ahead"
+    local_sha = _push_ahead_branch(bare_repo, branch)
+    assert GitRepo(bare_repo).remote_branch_relation(branch) == "ahead"
+
+    outcome, _, reviewer, events = await _gate(store, tmp_path, bare_repo, branch=branch)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert reviewer.calls
+    remote_sha = _git(
+        bare_repo, "ls-remote", "origin", f"refs/heads/{branch}",
+    ).stdout.split()[0]
+    assert remote_sha == local_sha, "the reviewed sha must be pushed to the remote"
+    assert GitRepo(bare_repo).remote_branch_relation(branch) == "up_to_date"
+    assert any(
+        e["kind"] == "already_satisfied_branch_fast_forwarded" for e in events)
+
+
+async def test_the_fast_forward_remedy_never_forces(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """AC2: the remedy for "ahead" is a plain fast-forward push -- never
+    `--force`, never `--force-with-lease`, and `never_push_to` still applies
+    (proven by the protected-branch test below)."""
+    branch = "no-human/ahead-spy"
+    _push_ahead_branch(bare_repo, branch)
+
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def _spy(cmd, *a, **kw):
+        calls.append(list(cmd))
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+
+    outcome, _, _, _ = await _gate(store, tmp_path, bare_repo, branch=branch)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    push_calls = [c for c in calls if "push" in c]
+    assert push_calls, "expected the fast-forward push to actually happen"
+    assert not any("--force" in c or "--force-with-lease" in c for c in push_calls)
+
+
+async def test_a_protected_branch_ahead_of_its_remote_is_refused_naming_the_reason(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """AC3: a fast-forward `push_sha_fast_forward` rejects as a protected
+    branch becomes a refusal naming the reason -- `never_push_to` is never
+    relaxed on this path."""
+    branch = "no-human/ahead-protected"
+    _push_ahead_branch(bare_repo, branch)
+
+    def _refuse(self, sha, branch, *, remote="origin", set_upstream=False):
+        raise ProtectedBranch(f"refusing to push protected branch: {branch}")
+
+    monkeypatch.setattr(GitRepo, "push_sha_fast_forward", _refuse)
+
+    outcome, task, reviewer, _ = await _gate(store, tmp_path, bare_repo, branch=branch)
+
+    assert outcome.status is TaskStatus.FAILED
+    assert reviewer.calls == []
+    failure_reason = (await store.list_attempts(task.id))[-1]["failure_reason"]
+    assert "protected branch" in failure_reason
+
+
+async def test_a_rejected_fast_forward_is_refused_naming_the_git_error(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """AC3: an ordinary rejection (e.g. a server-side race) also becomes a
+    named refusal, not a crash or a silent pass."""
+    branch = "no-human/ahead-rejected"
+    _push_ahead_branch(bare_repo, branch)
+
+    def _reject(self, sha, branch, *, remote="origin", set_upstream=False):
+        raise GitError("! [rejected] fast-forward push failed")
+
+    monkeypatch.setattr(GitRepo, "push_sha_fast_forward", _reject)
+
+    outcome, task, reviewer, _ = await _gate(store, tmp_path, bare_repo, branch=branch)
+
+    assert outcome.status is TaskStatus.FAILED
+    assert reviewer.calls == []
+    failure_reason = (await store.list_attempts(task.id))[-1]["failure_reason"]
+    assert "fast-forward" in failure_reason or "rejected" in failure_reason
 
 
 async def test_a_wip_blocked_subject_is_refused_even_when_pushed(bare_repo, tmp_path, store):
