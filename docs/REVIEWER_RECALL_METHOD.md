@@ -75,9 +75,8 @@ valid because it never depended on prompt wording.
   feature change; a test made tautological.
 - `spec-miss` — the diff claims to satisfy an AC it silently does not
   (e.g. handles the happy path, drops the error branch the AC names). One
-  case (added 2026-09-22, `specmiss-anchor-guard-aperture`) is a real,
-  already-merged PR review miss rather than a plant — see the amendment
-  below.
+  case (added 2026-09-22, `specmiss-anchor-guard-aperture`) is a real PR
+  review miss rather than a plant — see the amendment below.
 - `wiring` (added 2026-08-07) — the change is implemented and tested but
   never called by the production path, so the ticket's outcome does not
   occur through any caller production ships. Its `truth.json` carries
@@ -108,13 +107,21 @@ provenance verbatim (`recorded-replay` / `recorded-dogfood-history`).
 *Extension (2026-09-22), to `spec-miss`:* the same admissibility now covers
 a real PR review miss, not just a recorded gate run. `specmiss-anchor-
 guard-aperture` freezes PR #418's guard test
-(`tests/test_no_approximate_line_anchors.py`) at its real merged head: the
-guard's own classifier (`_UNIT_TAIL`/`_STOPWORDS`) is a stopword deny-list,
-so an anchor followed by ordinary prose reads as a unit and passes; the PR
-shipped with its own gate green and four already-wrong anchors elsewhere in
-`src/` unremedied. Nothing here was planted — the diff is the unmodified PR
-diff against its merge-base, and `planted_by` records
-`real-merged-history PR #418 (selected by supervising-session)`.
+(`tests/test_no_approximate_line_anchors.py`) at the PR's `bca008c0`
+revision: the guard's own classifier (`_UNIT_TAIL`/`_STOPWORDS`) is a
+stopword deny-list, so an anchor followed by ordinary prose reads as a unit
+and passes. Per `gh pr view 418`, the PR was **closed without merging**
+(`mergedAt: null`) — this is a real, fetchable PR diff (`git fetch origin
+pull/418/head`), not a claim that it ever landed on `main`; `planted_by`
+and `truth.json`'s description say so explicitly. A systematic re-scan
+(reimplementing the guard's own `_find_anchors` and running it over every
+comment/string literal in `src/` at the merge-base) found the real
+false-negative population confined to the 4 files this PR's own diff
+touches, and confirmed the PR author hand-fixed all of them by the PR's own
+head — so the case demonstrates the classifier bug as a mutation (the
+guard's own `test_the_gate_fails_on_a_planted_anchor` methodology), not as
+a currently-shipping miss. Nothing here was planted — the diff is the
+unmodified PR diff against its merge-base.
 
 **Controls.** K≥4 defect-free cases (real merged diffs, unmodified) are mixed
 in, indistinguishable by filename; **K=10 as of 2026-08-07**, of which ≥2 are
