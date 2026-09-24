@@ -36,10 +36,8 @@ from urllib.parse import quote as _url_quote
 
 from ..agent.advisory import advisory_backend
 from ..agent.backend import AgentEvent, CodingBackend, local_run_without_subscription, resolve_backend_name
-from ..agent.claude_backend import ClaudeBackend
 from ..agent.claude_backend import (
     TRANSPORT_DIAGNOSIS_MARKER as _TRANSPORT_BLOCKER_MARKER,
-    AgentEvent,
     ClaudeBackend,
     dewrap as _dewrap,
 )
@@ -77,6 +75,7 @@ from ..blockers import (
     triage,
     user_pause_blocker,
 )
+from .. import capability_gap
 from ..ci.base import CIResult, HumanGatedCI
 from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run, permission_mode
 from ..history.skills import discover_skills
@@ -2195,6 +2194,7 @@ class Orchestrator:
     def emit(self, kind: str, text: str = "", **meta: Any) -> None:
         self._sink({"source": "orchestrator", "kind": kind, "text": text, **meta})
         self._telemetry_hook(kind, meta)
+        capability_gap.observe(self, kind, meta)
 
     def _emit_manifest_repairs(self, repaired: list[tuple[list[str], str]]) -> None:
         """Drain every ``on_repair(paths, note)`` call from one manifest
