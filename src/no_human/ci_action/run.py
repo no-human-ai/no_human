@@ -83,6 +83,18 @@ One process, one pull request, one comment, then exit. The state machine:
    :data:`no_human.core.orchestrator.Orchestrator.REVIEW_CHECKLIST_MARKER` —
    this is a distinct product surface and must not wake the product's own PR
    watcher.
+   DESIGN DECISION — @-MENTION AND THE NOTIFY-ON-EDIT GAP. The comment
+   carries a single ``@<login>`` mention of the pull request's author
+   (source: the event payload's ``pull_request.user.login``, never the
+   diff, PR title, or PR body). GitHub sends a mention notification only
+   when a comment is CREATED (the first ``POST``); the same mention
+   surviving an in-place ``PATCH`` on every later run does NOT re-notify.
+   Rather than post a second comment on a verdict flip to chase that
+   notification (rejected: it needs prior-verdict parsing, a second
+   marker, and a flap guard for PASS→FAIL→PASS→FAIL), this Action keeps
+   the ONE upserted comment and is honest about which case a given run is
+   in: the body says plainly whether *this* edit notified the contributor
+   or not, so it never claims a notification that did not happen.
 7. EXIT. 0 = ran and passed, or a documented fork-skip. 1 = ran and found
    blocking findings or tampering (only when ``fail_on_findings`` is true).
    2 = did not run at all.
@@ -99,7 +111,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import API_KEY_VAR, DEFAULT_CONFIG, SUBSCRIPTION_TOKEN_VAR, scrub_metered_auth
 from ..core.task import Task
@@ -133,6 +145,71 @@ MARKER = "<!-- no-human-review-gate:v1 -->"
 
 #: GitHub rejects a comment body over 65536 bytes; stay under github.py's cap.
 _BODY_CAP = github.MAX_BODY_CHARS
+
+#: ASCII alphanumeric, no leading/trailing hyphen, <= 39 chars — NOT a ban on
+#: consecutive internal hyphens. GitHub's *signup form* rejects a double
+#: hyphen for new accounts, but the login NAMESPACE does not: older accounts
+#: are grandfathered and remain live, mentionable users (verified live via
+#: `gh api /users/E--E`: `{"login":"E--E","type":"User", ...}`, created
+#: 2015-02-18). A regex that also rejected internal `--` would silently drop
+#: the mention for that whole class of real contributors with no tell to
+#: anyone that it happened — see `_mention_for`. A login that fails this (or
+#: ends in "[bot]") is never mentioned.
+_LOGIN_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]\Z|\A[A-Za-z0-9]\Z")
+_LOGIN_MAX = 39
+
+#: The three possible honesty sentences `render_body` pairs with a mention —
+#: one per `notify_state`. None contains an `@` or a login, so none ever
+#: adds to the exactly-one-mention count a rendered body must satisfy.
+_NOTIFIED_SENTENCE = "GitHub notified you when this comment was first created."
+_NOT_NOTIFIED_SENTENCE = (
+    "This comment was edited in place, so GitHub did not send a new "
+    "notification for this run — re-read it after every push."
+)
+_NOT_POSTED_SENTENCE = (
+    "This run did not create or edit the comment — nothing was posted, so "
+    "GitHub sent no notification. See the job log or summary for why."
+)
+
+#: `render_body`'s `notify_state` values, mapped to the sentence each one
+#: pairs with the mention. "created" = a POST fired (or is known to have,
+#: per the duplicate-hazard fallback in `github.upsert_comment`); "edited" =
+#: a PATCH replaced an existing comment in place; "not_posted" = neither
+#: happened (dry-run made no HTTP call, or the POST/PATCH failed/was
+#: refused). Exactly one of these is ever true for a given render.
+_NOTIFY_SENTENCES: dict[str, str] = {
+    "created": _NOTIFIED_SENTENCE,
+    "edited": _NOT_NOTIFIED_SENTENCE,
+    "not_posted": _NOT_POSTED_SENTENCE,
+}
+
+
+def _mention_for(login: str | None) -> str:
+    """Return ``"@<login>"``, or ``""`` if *login* must not be mentioned.
+
+    The login comes from the GitHub API (``pull_request.user.login``), not
+    from the diff, PR title, or PR body — but it is still interpolated into
+    Markdown an Action with `pull-requests: write` posts, so it is validated
+    against :data:`_LOGIN_RE` (ASCII alphanumeric, no leading/trailing
+    hyphen, <= 39 chars) before use. This is a deliberately STRICTER subset
+    of GitHub's actual login namespace, not a restatement of it: it allows
+    internal ``--`` (grandfathered accounts predating GitHub's later ban on
+    consecutive hyphens at signup keep using them — see :data:`_LOGIN_RE`'s
+    comment), but still rejects anything with no live GitHub login could
+    ever produce. A `[bot]`-suffixed login (dependabot, renovate,
+    github-actions, ...) is rejected explicitly, before the regex check, so
+    a future loosening of the regex cannot silently start mentioning bot
+    authors. A rejected login never produces a placeholder (e.g. "(author
+    could not be mentioned)") — the whole mention line is simply omitted, so
+    a bot-authored PR does not carry a permanent tell.
+    """
+    if not isinstance(login, str) or not login or len(login) > _LOGIN_MAX:
+        return ""
+    if login.lower().endswith("[bot]"):
+        return ""
+    if not _LOGIN_RE.match(login):
+        return ""
+    return f"@{login}"
 
 #: PR descriptions are attacker-controlled free text. Cap what we forward to
 #: the reviewer's context so a huge body cannot itself become a cost attack.
@@ -403,15 +480,79 @@ def _tamper_checklist_items(report, repo: Path, before_ref: str, after_ref: str)
 
 
 def _cell(value: str) -> str:
-    """Collapse newlines and escape ``|`` so *value* survives as one GFM cell."""
+    """Collapse newlines and escape ``\\``/``|``/``@`` so *value* survives as one GFM cell.
+
+    Findings text (``item.comment``/``item.evidence``) is DERIVED from the
+    diff — e.g. the tamper guard's ``"test file deleted: <path>"`` reasons
+    carry whatever path the contributor chose, including one under an npm
+    scoped-package directory like ``packages/@acme/ui/foo.test.ts``. Left
+    unescaped, that ``@acme`` renders as a live GitHub mention notification
+    the moment this table is posted — no attacker intent required, just an
+    ordinary monorepo layout. The ``@``-mention this module deliberately
+    emits comes ONLY from :func:`_mention_for` on the validated
+    ``author_login`` and is placed above every findings table (see
+    `render_body`'s docstring); escaping ``@`` here keeps that the only
+    mention a rendered TEXT cell can ever contain.
+
+    The backslash is escaped FIRST, before ``|`` and ``@`` — the same shape
+    ``no_human.intake.jira``'s JQL-query escaping uses (backslash before
+    quote). A value that already contains its own backslash immediately
+    before an ``@`` (e.g. a diff-derived path fragment like
+    ``src\\@evilorg/x.test.ts``) would otherwise have that backslash consumed
+    by the ``@`` replacement instead of being escaped itself, turning the
+    text back into a SECOND bare ``@`` once rendered — the opposite of what
+    this function claims to guarantee. Escaping ``\\`` first means the
+    escape this function adds can never itself be un-escaped by a value's
+    own content.
+
+    :func:`_where` (the file-path column) does NOT reuse this function — it
+    wraps its value in a backtick code span, where CommonMark's backslash
+    escapes are inert (see its own docstring for why ``@`` is left alone
+    there and a different hazard is neutralized instead).
+    """
     text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-    return text.replace("|", "\\|")
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("@", "\\@")
+
+
+def _code_cell(value: str) -> str:
+    """Collapse newlines, escape ``|``, and neutralize backticks for a code span.
+
+    Used only by :func:`_where` (the file-path column) and for the ``model``
+    input inside its backtick span in `render_body`. Both destinations wrap
+    the returned text in backticks, and CommonMark section 6.1 says
+    backslash escapes DO NOTHING inside a code span — so escaping ``@`` here
+    would neither stop it being mention-capable if the span broke, nor be
+    needed if the span stays intact (an ``@`` inside an INTACT code span is
+    never mention-capable to begin with). Escaping it anyway would only
+    corrupt ordinary values that legitimately contain ``@``, such as an
+    npm-scoped path (``packages/@acme/ui/foo.test.ts``) — the exact example
+    this module's own docs use. ``|`` is still escaped: a pipe inside a code
+    span still splits a GFM table row. The real hazard is the value's OWN
+    backtick(s) (legal in a git filename, e.g. ``` `x`@attacker`.py ```)
+    closing the span early and letting whatever follows render as plain
+    Markdown outside it; every backtick run is replaced with a single quote
+    so the span can never be broken out of, whatever the value contains.
+    """
+    text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return re.sub(r"`+", "'", text).replace("|", "\\|")
 
 
 def _where(file: str, line: int) -> str:
+    """Render ``file`` (and optional ``line``) as an inline-code table cell.
+
+    ``file`` is diff-derived (a tamper reason's path, or a reviewer
+    citation), so it is run through :func:`_code_cell` BEFORE being wrapped
+    in backticks: a raw backtick in the path would otherwise close the
+    inline-code span early, and :func:`_code_cell` neutralizes exactly that
+    hazard by replacing backtick runs — nothing else. ``@`` is left intact:
+    inside the INTACT code span this produces, it is never mention-capable,
+    so escaping it here would only corrupt an ordinary path (e.g. an
+    npm-scoped ``packages/@acme/ui/foo.test.ts``) for no security benefit.
+    """
     if not file:
         return ""
-    return f"`{file}:{line}`" if line else f"`{file}`"
+    safe = _code_cell(file)
+    return f"`{safe}:{line}`" if line else f"`{safe}`"
 
 
 def _findings_table(items: list[ChecklistItem]) -> list[str]:
@@ -436,15 +577,53 @@ def render_body(
     tampered: bool,
     note: str = "",
     reviewer_veto: bool = False,
+    author_login: str = "",
+    notify_state: str = "edited",
     tamper_ran: bool = False,
     tamper_skip_reason: str = "the tamper guard did not run for this review.",
 ) -> str:
+    """Render the gate's one Markdown comment, including its @-mention.
+
+    *author_login* is the ONLY source for the ``@<login>`` mention — never
+    *note*, *model*, or anything else that could carry diff/PR-title/PR-body
+    text, all of which is untrusted free text (see the module docstring's
+    step 4/5) and must never be assembled into a mention. It is validated by
+    :func:`_mention_for`; a login that fails validation (wrong grammar, or a
+    `[bot]` author) yields no mention line and no placeholder text at all.
+    *note* and *model* are still free text, so both are routed through
+    :func:`_cell`/:func:`_code_cell` before they reach the body — neither can
+    add a second live mention or break out of the span it is placed in.
+
+    NOTIFY-ON-EDIT, PLUS "NEVER POSTED". GitHub only sends a mention
+    notification when a comment is CREATED, never when an existing one is
+    PATCHed in place — and this Action's own upsert
+    (:func:`no_human.ci_action.github.upsert_comment`) PATCHes the SAME
+    comment on every run after the first. A third case exists too: a
+    dry-run makes no HTTP call at all, and a POST/PATCH that raised leaves
+    nothing created or edited either. *notify_state* — one of ``"created"``,
+    ``"edited"``, or ``"not_posted"`` (see :data:`_NOTIFY_SENTENCES`) — tells
+    this render which of the three the CALLER already knows it is in, so the
+    sentence printed next to the mention never claims a notification, or an
+    edit, that did not actually happen. The mention line and its honesty
+    sentence are placed directly under the heading, above every findings
+    table, specifically so `_truncate`'s hard tail-cut can never remove
+    either one.
+    """
+    if notify_state not in _NOTIFY_SENTENCES:
+        raise ValueError(f"notify_state must be one of {sorted(_NOTIFY_SENTENCES)}, got {notify_state!r}")
+    mention = _mention_for(author_login)
     lines = [MARKER, "", f"## no_human review gate — {'✅ PASS' if verdict == 'PASS' else '❌ FAIL'}"]
+    if mention:
+        lines += [
+            "",
+            f"{mention} — the no_human review gate ran on this pull request.",
+            f"*{_NOTIFY_SENTENCES[notify_state]}*",
+        ]
     if note:
-        lines += ["", note]
+        lines += ["", _cell(note)]
     lines += [
         "",
-        f"- Model: `{model}` (credential mode: `{credential_mode}`)",
+        f"- Model: `{_code_cell(model)}` (credential mode: `{credential_mode}`)",
         f"- Files reviewed: {files_reviewed} of {files_total}"
         + (" (capped by `max_files`)" if files_reviewed < files_total else ""),
     ]
@@ -604,6 +783,9 @@ def _run_pull_request(event: dict[str, Any]) -> int:
     pr_number = pr.get("number")
     if not (repo_full and base_sha and head_sha and pr_number):
         return _fail("event payload is missing repository/base/head/number fields")
+    # `or {}`, not `.get("user", {})`: GitHub nulls `pull_request.user` for a
+    # deleted/ghosted account, and `_mention_for` already rejects "" cleanly.
+    author_login = (pr.get("user") or {}).get("login") or ""
 
     try:
         actual_head = _git(workspace, "rev-parse", "HEAD").strip()
@@ -686,7 +868,7 @@ def _run_pull_request(event: dict[str, Any]) -> int:
         # checkout path), so the reason the tamper guard did not run is
         # "nothing changed to check", not "no tree available" — the two are
         # different true facts and must not share one hardcoded sentence.
-        body = render_body(
+        render = lambda state: render_body(  # noqa: E731
             verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
             model=model, files_total=0, files_reviewed=0,
             credential_mode=cred.mode, tampered=False, tamper_ran=False,
@@ -695,8 +877,9 @@ def _run_pull_request(event: dict[str, Any]) -> int:
                 "head commit, so there was nothing to check for tampering."
             ),
             note="No file changes were found between the merge base and the head commit — nothing to review.",
+            author_login=author_login, notify_state=state,
         )
-        return _post_and_exit(body, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
+        return _post_and_exit(render, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
     try:
         diff_override = _git(
@@ -764,6 +947,7 @@ def _run_pull_request(event: dict[str, Any]) -> int:
         pr_title=pr_title, pr_body=pr_body,
         files_total=files_total, kept=kept, credential_mode=cred.mode,
         tamper_items=tamper_items, tampered=bool(tamper_report.tampered), tamper_ran=True,
+        author_login=author_login,
     )
 
 
@@ -787,6 +971,7 @@ def _finish_review(
     tamper_items: list[ChecklistItem],
     tampered: bool,
     tamper_ran: bool,
+    author_login: str,
     tamper_skip_reason: str = "",
     note: str = "",
 ) -> int:
@@ -867,7 +1052,7 @@ def _finish_review(
         demoted_citations=decision.demoted_citations, model=model,
         files_total=files_total, files_reviewed=len(kept),
         credential_mode=credential_mode, tampered=tampered, reviewer_veto=reviewer_veto,
-        note=note, tamper_ran=tamper_ran,
+        note=note, tamper_ran=tamper_ran, author_login=author_login,
     )
     if tamper_skip_reason:
         # Only override `render_body`'s own generic fallback reason when a
@@ -875,8 +1060,8 @@ def _finish_review(
         # False` without a reason still gets the safe generic sentence
         # rather than an empty/blank one.
         render_kwargs["tamper_skip_reason"] = tamper_skip_reason
-    body = render_body(**render_kwargs)
-    return _post_and_exit(body, verdict, repo_full, pr_number, github_token, dry_run, fail_on_findings)
+    render = lambda state: render_body(notify_state=state, **render_kwargs)  # noqa: E731
+    return _post_and_exit(render, verdict, repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
 
 # --------------------------------------------------------------------------- #
@@ -976,6 +1161,10 @@ def _run_workflow_run_with_client(
         _set_output("verdict", "SKIPPED")
         return EXIT_OK
 
+    # `or {}`, not `.get("user", {})`: GitHub nulls `pull_request.user` for a
+    # deleted/ghosted account, and `_mention_for` already rejects "" cleanly.
+    author_login = (pr_rest.get("user") or {}).get("login") or ""
+
     rest_head_sha = (pr_rest.get("head") or {}).get("sha", "")
     if rest_head_sha != event_head_sha:
         return _fail(
@@ -1041,13 +1230,14 @@ def _run_workflow_run_with_client(
                 + (f", and {len(skipped_no_diff) - 10} more" if len(skipped_no_diff) > 10 else "")
                 + " had no diff available and could not be reviewed.)"
             )
-        body = render_body(
+        render = lambda state: render_body(  # noqa: E731
             verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
             model=model, files_total=files_total, files_reviewed=0,
             credential_mode=cred.mode, tampered=False, tamper_ran=False,
             tamper_skip_reason=_REST_TAMPER_SKIP_REASON, note=note,
+            author_login=author_login, notify_state=state,
         )
-        return _post_and_exit(body, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
+        return _post_and_exit(render, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
     diff_parts = []
     for p in kept:
@@ -1109,31 +1299,47 @@ def _run_workflow_run_with_client(
             files_total=files_total, kept=kept, credential_mode=cred.mode,
             tamper_items=[], tampered=False, tamper_ran=False,
             tamper_skip_reason=_REST_TAMPER_SKIP_REASON, note=note,
+            author_login=author_login,
         )
 
 
 def _post_and_exit(
-    body: str, verdict: str, repo_full: str, pr_number: int, github_token: str,
+    render: Callable[[str], str], verdict: str, repo_full: str, pr_number: int, github_token: str,
     dry_run: bool, fail_on_findings: bool,
 ) -> int:
     if dry_run:
+        # No HTTP call happens on this path, so nothing was posted or
+        # edited and nothing notifies anyone — render the "not_posted"
+        # state, matching `render_body`'s own tri-state design.
+        body = render("not_posted")
         print(body)
         _append_step_summary(body)
         _set_output("verdict", verdict)
         _set_output("comment_url", "")
     else:
+        last_rendered: dict[str, str] = {}
+
+        def _tracking_render(creating: bool) -> str:
+            body = render("created" if creating else "edited")
+            last_rendered["body"] = body
+            return body
+
         try:
             api_url = os.environ.get("GITHUB_API_URL", github.DEFAULT_API_URL)
             with github.GitHubClient(token=github_token, api_url=api_url) as client:
-                comment = github.upsert_comment(client, repo_full, pr_number, MARKER, body)
+                comment = github.upsert_comment(client, repo_full, pr_number, MARKER, _tracking_render)
         except (github.GitHubAPIError, github.WriteSurfaceViolation) as exc:
             # The review already ran and reached a verdict — a failure to
             # POST it must not also discard it. Put the rendered body in the
             # job summary (the one surface this process can still write to
             # without the GitHub API) before falling through to `_fail`'s own
             # exit-2 report, so a comment-post failure never reads as "no
-            # findings" to anyone checking the job's summary tab.
-            _append_step_summary(body)
+            # findings" to anyone checking the job's summary tab. Render as
+            # "not_posted" unconditionally here: the POST/PATCH failed (or
+            # was refused before any HTTP write, for `WriteSurfaceViolation`),
+            # so nothing was created and nothing was edited — the summary
+            # must not claim either happened.
+            _append_step_summary(render("not_posted"))
             return _fail(f"could not post the review comment: {exc}")
         _set_output("verdict", verdict)
         # GITHUB_SERVER_URL is GitHub's own documented way to get the correct
@@ -1147,7 +1353,7 @@ def _post_and_exit(
             "comment_url",
             f"{server_url}/{repo_full}/pull/{pr_number}#issuecomment-{comment.id}",
         )
-        _append_step_summary(body)
+        _append_step_summary(last_rendered["body"])
 
     if verdict == "FAIL" and fail_on_findings:
         return EXIT_FINDINGS

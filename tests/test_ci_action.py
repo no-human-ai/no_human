@@ -89,7 +89,7 @@ def repo(tmp_path: Path) -> RepoInfo:
 
 def _event(repo: RepoInfo, *, fork: bool = False, deleted_fork: bool = False,
            pr_number: int = 7, title: str = "Add a feature",
-           body: str = "does the thing") -> dict:
+           body: str = "does the thing", author: str | None = "octocat") -> dict:
     base_full = "acme/widgets"
     if deleted_fork:
         head_repo = None
@@ -103,6 +103,7 @@ def _event(repo: RepoInfo, *, fork: bool = False, deleted_fork: bool = False,
             "number": pr_number,
             "title": title,
             "body": body,
+            "user": {"login": author} if author is not None else None,
             "base": {"sha": repo.base_sha},
             "head": {"sha": repo.head_sha, "repo": head_repo},
         },
@@ -1594,6 +1595,39 @@ def test_cell_collapses_newlines_and_escapes_pipes():
     assert run._cell("a\nb|c\r\nd") == "a b\\|c d"
 
 
+def test_cell_escapes_at_signs_so_diff_text_cannot_become_a_mention():
+    # A tamper-guard reason built from a changed path under an npm scoped
+    # package (e.g. `packages/@acme/ui/foo.test.ts`) must never turn into a
+    # live GitHub mention just because it flows through a findings table.
+    cell = run._cell("test file deleted: packages/@acme/ui/foo.test.ts")
+    assert "/@acme" not in cell
+    assert "/\\@acme" in cell
+    assert run._cell("cc @evil") == "cc \\@evil"
+
+
+def test_cell_escapes_the_backslash_before_the_at_sign():
+    # GFM/CommonMark pairs up backslashes two at a time before deciding
+    # whether the character after them is escaped: an EVEN run of `\`
+    # immediately before `@` leaves the `@` LIVE (mention-capable); only an
+    # ODD run makes it inert. A diff-derived value can carry its own `\`
+    # right before an `@` (e.g. a path fragment like
+    # `src\@evilorg/x.test.ts`) — `_cell` must escape `\` FIRST so a value's
+    # own backslash can never pair off with the backslash `_cell` adds,
+    # which would silently turn an intended escape into a live mention.
+    raw = "src\\@evilorg/x.test.ts"  # one backslash, then a bare @
+    cell = run._cell(raw)
+    at_index = cell.index("@")
+    backslash_run = 0
+    i = at_index - 1
+    while i >= 0 and cell[i] == "\\":
+        backslash_run += 1
+        i -= 1
+    assert backslash_run % 2 == 1, (
+        f"{backslash_run} backslashes precede '@' — an EVEN count means "
+        "CommonMark renders this '@' LIVE, not escaped"
+    )
+
+
 def test_truncate_drops_advisory_before_hard_truncating():
     advisory = [ChecklistItem(label="nit", passed=False, file="x.py", line=1,
                                comment="x" * 500, severity="low")]
@@ -1630,6 +1664,369 @@ def test_render_body_fails_closed_when_a_caller_forgets_tamper_ran():
     assert "Tamper guard: DID NOT RUN" in body, body
     for phrase in ("Tamper guard: TAMPERED", "tamper guard passed", "no tampering"):
         assert phrase not in body, body
+
+
+# --------------------------------------------------------------------------- #
+# Author mention                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _render(author_login="octocat", notify_state="edited", **overrides):
+    kwargs = dict(
+        verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
+        model="m", files_total=1, files_reviewed=1,
+        credential_mode="api_key", tampered=False,
+    )
+    kwargs.update(overrides)
+    return run.render_body(
+        author_login=author_login, notify_state=notify_state, **kwargs
+    )
+
+
+def test_render_body_mentions_the_author_exactly_once_with_no_findings():
+    # This drives the trivial case (no findings at all); the property that
+    # a mention stays the ONLY `@` even when findings text carries one is
+    # pinned separately below, by name, since that is the case an attacker
+    # or an ordinary monorepo path could actually threaten.
+    body = _render(author_login="octocat")
+    assert body.count("@octocat") == 1
+    assert body.count("@") == 1
+
+
+def test_render_body_mentions_the_author_exactly_once_even_with_at_signs_in_findings():
+    # Unlike the test above (blocking=[], advisory=[], so "exactly one @" is
+    # trivially true), this drives findings whose text carries an `@` — a
+    # tamper-guard reason built from a diff-controlled path — and pins that
+    # the deliberate author mention is STILL the only live `@` in the body:
+    # every other `@` must come back backslash-escaped inside its table cell.
+    blocking = [ChecklistItem(
+        label="tamper guard", passed=False, file="x.ts", line=1,
+        comment="test file deleted: packages/@acme/ui/foo.test.ts", severity="critical",
+    )]
+    body = _render(author_login="octocat", blocking=blocking)
+    assert body.count("@octocat") == 1
+    assert "packages/@acme" not in body
+    assert "packages/\\@acme" in body
+
+
+def test_a_cited_path_with_an_at_sign_renders_the_path_verbatim():
+    # An ordinary npm-scoped path (no attacker, no backtick) must render
+    # UNCHANGED inside its code span. `_where` wraps it in backticks, and
+    # CommonMark section 6.1 says backslash escapes are inert inside a code
+    # span — so escaping "@" there would buy nothing (an intact span's "@"
+    # was never mention-capable to begin with) while visibly corrupting an
+    # everyday path like this one.
+    blocking = [ChecklistItem(
+        label="tamper guard", passed=False,
+        file="packages/@acme/ui/foo.test.ts", line=3, comment="ok", severity="critical",
+    )]
+    body = _render(author_login="octocat", blocking=blocking)
+    assert "`packages/@acme/ui/foo.test.ts:3`" in body
+    assert "\\@acme" not in body
+
+
+def test_a_backtick_in_a_diff_controlled_file_path_cannot_close_the_code_span():
+    # `_where` wraps `item.file` in a single-backtick GFM code span. A file
+    # path containing its OWN backtick (legal in a git filename) would close
+    # that span early if the path were spliced in raw, letting whatever
+    # follows — including a trailing `@login` — render as plain Markdown
+    # outside the span. `_where` neutralizes backtick RUNS instead of
+    # escaping "@": since an intact span already makes "@" inert (see the
+    # test above), the path's own "@" is left to render verbatim while its
+    # backtick can never break the span open.
+    file = "x`@attacker`.py"
+    blocking = [ChecklistItem(
+        label="tamper guard", passed=False,
+        file=file, line=5, comment="ok", severity="critical",
+    )]
+    body = _render(author_login="octocat", blocking=blocking)
+
+    where_cell = run._where(file, 5)
+    assert where_cell in body
+    # Exactly the opening and closing fence survive — none of the path's OWN
+    # backticks made it through to reopen or close the span early.
+    assert where_cell.count("`") == 2
+    assert "x`@attacker`.py" not in where_cell
+    assert "x'@attacker'.py" in where_cell
+    # The path's own "@" rendered verbatim (never escaped, per the test
+    # above) but it never became a second live mention: the ONLY thing the
+    # body actually mentions is the author, because "@attacker" here never
+    # leaves the intact code span it is trapped inside.
+    assert body.count("@octocat") == 1
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        "dependabot[bot]", "renovate[bot]", "github-actions[bot]",
+        "eve<script>", "a`b", "@eve", "-lead", "trail-",
+        "ünïcode", "foo bar", "x" * 40, "", None,
+    ],
+)
+def test_mention_is_omitted_for_unmentionable_logins(login):
+    body = _render(author_login=login)
+    assert "@" not in body
+    assert "unknown" not in body.lower()
+    assert "could not" not in body.lower()
+    assert run._NOTIFIED_SENTENCE not in body
+    assert run._NOT_NOTIFIED_SENTENCE not in body
+
+
+@pytest.mark.parametrize("login", ["octo-cat", "Octo9"])
+def test_mention_is_emitted_for_a_normal_login(login):
+    body = _render(author_login=login)
+    assert f"@{login}" in body
+    assert body.count("@") == 1
+
+
+@pytest.mark.parametrize("login", ["dou--ble", "E--E"])
+def test_mention_is_emitted_for_a_grandfathered_double_hyphen_login(login):
+    # GitHub's signup form now refuses a new double-hyphen login, but the
+    # login NAMESPACE does not retroactively ban it: "E--E" is a real, live
+    # `type: User` account (verified via `gh api /users/E--E`, created
+    # 2015-02-18) that can open a pull request today. Rejecting it here
+    # would silently drop the mention (and the notification) for that whole
+    # class of grandfathered contributors — see `_LOGIN_RE`'s comment.
+    body = _render(author_login=login)
+    assert f"@{login}" in body
+    assert body.count("@") == 1
+
+
+@pytest.mark.parametrize(
+    "login, expect_mention",
+    [
+        ("octocat", True),
+        ("octo-cat", True),
+        ("Octo9", True),
+        ("a", True),
+        ("dependabot[bot]", False),
+        ("DEPENDABOT[BOT]", False),
+        ("-lead", False),
+        ("trail-", False),
+        ("dou--ble", True),
+        ("E--E", True),
+        ("has space", False),
+        ("has@at", False),
+        ("octocat\n", False),
+        ("x" * 39, True),
+        ("x" * 40, False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_mention_for_grammar(login, expect_mention):
+    result = run._mention_for(login)
+    if expect_mention:
+        assert result == f"@{login}"
+    else:
+        assert result == ""
+
+
+def test_second_run_patches_and_body_says_it_did_not_notify():
+    """Pin the design decision on the SECOND run against an already-existing
+    marked comment: only a PATCH happens (never a second POST), and the body
+    it sends states plainly that this edit did not notify anyone."""
+    calls: list[str] = []
+    patched_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 3, "body": f"{run.MARKER}\nold"}])
+        if request.method == "PATCH":
+            payload = json.loads(request.content)
+            patched_bodies.append(payload["body"])
+            return httpx.Response(200, json={"id": 3, "body": payload["body"]})
+        raise AssertionError("must not POST when a marked comment already exists")
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    render = lambda creating: _render(  # noqa: E731
+        author_login="octocat", notify_state="created" if creating else "edited"
+    )
+    github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+
+    assert calls == ["GET", "PATCH"]
+    assert len(patched_bodies) == 1
+    body = patched_bodies[0]
+    assert body.count("@octocat") == 1
+    assert run._NOT_NOTIFIED_SENTENCE in body
+    assert run._NOTIFIED_SENTENCE not in body
+
+
+def test_first_run_creates_and_body_says_it_notified():
+    calls: list[str] = []
+    created_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        payload = json.loads(request.content)
+        created_bodies.append(payload["body"])
+        return httpx.Response(201, json={"id": 9, "body": payload["body"]})
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    render = lambda creating: _render(  # noqa: E731
+        author_login="octocat", notify_state="created" if creating else "edited"
+    )
+    github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+
+    assert calls == ["GET", "POST"]
+    assert len(created_bodies) == 1
+    body = created_bodies[0]
+    assert body.count("@octocat") == 1
+    assert run._NOTIFIED_SENTENCE in body
+    assert run._NOT_NOTIFIED_SENTENCE not in body
+
+
+def test_update_path_body_never_claims_the_contributor_was_notified():
+    body = _render(author_login="octocat", notify_state="edited")
+    assert run._NOTIFIED_SENTENCE not in body
+    assert run._NOT_NOTIFIED_SENTENCE in body
+
+
+def test_dry_run_body_does_not_claim_a_comment_was_edited(env, monkeypatch, capsys):
+    # Dry-run makes ZERO HTTP calls (see test_dry_run_makes_no_http_calls) —
+    # nothing was created and nothing was edited, so the body must not carry
+    # either the "created" or the "edited" honesty sentence, only the
+    # dedicated "not_posted" one.
+    monkeypatch.setenv("INPUT_DRY_RUN", "true")
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("dry_run must make zero GitHub API calls")
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    out = capsys.readouterr().out
+    assert run._NOT_POSTED_SENTENCE in out
+    assert run._NOTIFIED_SENTENCE not in out
+    assert run._NOT_NOTIFIED_SENTENCE not in out
+
+
+def test_post_failure_summary_does_not_claim_an_edit(env, monkeypatch):
+    # The POST failed (every attempt 500s), so nothing was created and
+    # nothing was edited — the step summary this except-branch writes must
+    # not claim either happened.
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(500)
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    summary = env["summary_path"].read_text(encoding="utf-8")
+    assert run._NOT_POSTED_SENTENCE in summary
+    assert run._NOTIFIED_SENTENCE not in summary
+    assert run._NOT_NOTIFIED_SENTENCE not in summary
+
+
+def test_step_summary_carries_the_body_that_was_actually_sent(env, monkeypatch):
+    # `_tracking_render` exists so the job summary reflects the EXACT body
+    # that was POSTed/PATCHed, not a second, independently-rendered copy
+    # that could (for example) disagree on the notify sentence.
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    sent_bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        payload = json.loads(request.content)
+        sent_bodies.append(payload["body"])
+        return httpx.Response(201, json={"id": 1, "body": payload["body"]})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    summary = env["summary_path"].read_text(encoding="utf-8")
+    assert len(sent_bodies) == 1
+    assert sent_bodies[0] in summary
+    assert run._NOTIFIED_SENTENCE in sent_bodies[0]
+
+
+def test_note_and_model_cannot_add_a_second_mention():
+    # `render_body`'s docstring claims `author_login` is the ONLY source of
+    # a mention — `note` and `model` are free text too (an operator input
+    # and, potentially, diff-adjacent text) and must not be spliced in raw.
+    body = _render(
+        author_login="octocat",
+        note="cc @evil see packages/@acme too",
+        model="claude-@sneaky`x`",
+    )
+    assert body.count("@octocat") == 1
+    assert "cc @evil" not in body
+    assert "cc \\@evil" in body
+    assert "packages/@acme" not in body
+    assert "packages/\\@acme" in body
+    # `model` sits inside a code span: its own "@" stays intact (inert
+    # there, same reasoning as the file-path column) but its own backtick
+    # must not be able to break the span open.
+    assert "`claude-@sneaky'x'`" in body
+
+
+def test_mention_is_never_assembled_from_pr_title_or_body(env, monkeypatch):
+    event_path = env["event_path"]
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["pull_request"]["title"] = "ping @someoneelse"
+    event["pull_request"]["body"] = "cc @someoneelse and @another"
+    event["pull_request"]["user"] = {"login": "octocat"}
+    event_path.write_text(json.dumps(event))
+
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    body = bodies[0]["body"]
+    assert "@someoneelse" not in body
+    assert "@another" not in body
+    assert body.count("@octocat") == 1
+
+
+def test_missing_user_object_still_posts_without_a_mention(env, monkeypatch):
+    event_path = env["event_path"]
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["pull_request"]["user"] = None
+    event_path.write_text(json.dumps(event))
+
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert "@" not in bodies[0]["body"]
+
+
+def test_main_passes_author_login_through(env, monkeypatch):
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, _no_comments_then_create_handler(calls))
+
+    captured = {}
+    real_render_body = run.render_body
+
+    def _spy(*args, **kwargs):
+        captured["author_login"] = kwargs.get("author_login")
+        captured["notify_state"] = kwargs.get("notify_state")
+        return real_render_body(*args, **kwargs)
+
+    monkeypatch.setattr(run, "render_body", _spy)
+    assert run.main() == run.EXIT_OK
+    assert captured["author_login"] == "octocat"
+    assert captured["notify_state"] == "created"
 
 
 # --------------------------------------------------------------------------- #
@@ -1925,3 +2322,39 @@ def test_upsert_relists_and_patches_on_create_failure_duplicate_hazard():
     assert c.id == 55
     assert calls.count("POST") == 1 + github._MAX_5XX_RETRIES
     assert calls[-1] == "PATCH"
+
+
+def test_duplicate_hazard_fallback_renders_as_creating_even_though_it_patches():
+    """The re-list-then-PATCH fallback above lands its own comment via an
+    HTTP PATCH, but the docstring's claim ("a create DID happen ... even
+    though this call's own HTTP verb is PATCH") is only true if the caller's
+    render callable is actually invoked with creating=True on that specific
+    call — pin that a mutation of the fallback to creating=False would be
+    caught, since it is not observable from the transport alone."""
+    post_attempted = {"n": 0}
+    seen_creating: list[bool] = []
+
+    def render(creating: bool) -> str:
+        seen_creating.append(creating)
+        return f"{run.MARKER}\nrendered creating={creating}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            if post_attempted["n"] == 0:
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=[{"id": 55, "body": f"{run.MARKER}\nlanded"}])
+        if request.method == "POST":
+            post_attempted["n"] += 1
+            return httpx.Response(500)
+        if request.method == "PATCH":
+            payload = json.loads(request.content)
+            return httpx.Response(200, json={"id": 55, "body": payload["body"]})
+        raise AssertionError(request.method)
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    c = github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+    assert c.id == 55
+    assert "creating=True" in c.body
+    # One render for every POST attempt (each retried creating=True render)
+    # plus the final fallback PATCH render, also creating=True.
+    assert seen_creating[-1] is True

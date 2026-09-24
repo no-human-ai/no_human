@@ -379,24 +379,43 @@ def find_marked_comment(comments: list[Comment], marker: str) -> Comment | None:
     return min(matches, key=lambda c: c.id)
 
 
+def _rendered(body: str | Callable[[bool], str], *, creating: bool) -> str:
+    return body(creating) if callable(body) else body
+
+
 def upsert_comment(
-    client: GitHubClient, repo: str, pr_number: int, marker: str, body: str
+    client: GitHubClient, repo: str, pr_number: int, marker: str,
+    body: str | Callable[[bool], str],
 ) -> Comment:
     """Create-or-replace the Action's one comment on this PR.
 
     Listing MUST succeed before either branch runs — see
     :meth:`GitHubClient.list_comments`'s docstring on why "unreadable" must
     never be treated as "absent".
+
+    NOTIFY-ON-EDIT. GitHub sends a mention/subscriber notification only when
+    a comment is CREATED (the ``POST`` below); a ``PATCH`` that replaces an
+    existing comment's body — the update branch this function takes on every
+    run after the first — sends no notification at all, even if the new body
+    adds an ``@mention`` that was not there before. *body* may be a plain
+    ``str`` (posted unchanged either way) or a callable of one ``bool`` —
+    ``creating`` — so a caller can render text that is honest about which of
+    those two cases this call is: True only where a ``POST`` is about to
+    fire (and so a notification will too), False on the ``PATCH`` path. In
+    the duplicate-hazard fallback below, a PATCH lands but *creating=True* is
+    still correct: that comment is the earlier POST's own result (or a
+    racing run's identical create), so a create did happen and a
+    notification did fire, even though this call's own HTTP verb is PATCH.
     """
     existing = find_marked_comment(client.list_comments(repo, pr_number), marker)
     if existing is not None:
-        return client.update_comment(repo, existing.id, body)
+        return client.update_comment(repo, existing.id, _rendered(body, creating=False))
     try:
-        return client.create_comment(repo, pr_number, body)
+        return client.create_comment(repo, pr_number, _rendered(body, creating=True))
     except GitHubAPIError:
         # The POST may have landed before the transport error. Re-list once
         # and PATCH if it now exists; otherwise the original failure stands.
         existing = find_marked_comment(client.list_comments(repo, pr_number), marker)
         if existing is not None:
-            return client.update_comment(repo, existing.id, body)
+            return client.update_comment(repo, existing.id, _rendered(body, creating=True))
         raise
