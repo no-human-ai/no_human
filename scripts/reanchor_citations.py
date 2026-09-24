@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""Rewrite drifted `file.py:LINE[-LINE]` citations, mechanically.
+"""Rewrite drifted `path:symbol:LINE[-LINE]` citations, mechanically.
 
-`tests/test_readme_claims.py` tolerates small drift (±5 lines, see
-`_CITATION_DRIFT_WINDOW`) so an unrelated edit above a citation does not turn
-the suite red — but a drifted citation should still get re-anchored, not left
-to rely on the tolerance forever. This script finds every drifted legacy
-`path:line[-line]` citation across docs/security.md, docs/eval.md,
-docs/KNOWN_ISSUES.md, docs/WINDOWS.md and rewrites both the doc text and the matching
-CITATION_TABLE row to the line the content now lives on.
+Every citation in docs/security.md, docs/eval.md, docs/KNOWN_ISSUES.md and
+docs/WINDOWS.md carries a symbol. The symbol locates the cited token exactly,
+however far the code has moved, so this script rewrites a drifted row's line
+number — in both the doc text and the matching CITATION_TABLE row — to the
+line the token is now on. A line-only `path:line[-line]` citation has no
+symbol to resolve, so it is never guessed at: it is reported as unfixable
+("symbol missing, cannot auto-reanchor") and fails the run (issue #506).
 
-It imports the checker's own `_locate_line_citation`/`CITATION_TABLE` by path
+It imports the checker's own `_token_line_in_symbol`/`CITATION_TABLE` by path
 rather than re-implementing the search, so this script can never disagree
 with what `test_doc_citations_resolve_to_the_code_they_describe` actually
 checks.
 
 `--check` (default): read-only; reports drift and exits 1 if anything needs
-attention. `--apply`: writes. A citation whose content cannot be found at all
-(deleted, reworded, moved beyond the window) is never guessed at — it is
-reported as unfixable and left for a human, same as an ambiguous match (the
-raw citation text occurs zero or more than once in the doc, or in the
-CITATION_TABLE literal). Every fixable drift in a run is written together;
+attention. `--apply`: writes. An ambiguous match (the raw citation text
+occurs zero or more than once in the doc, or in the CITATION_TABLE literal)
+is reported as unfixable and left for a human, like a line-only citation. Every fixable drift in a run is written together;
 this file never writes a doc without its matching table row, or vice versa.
 
 This file is classified `ship`: it is doc-maintenance tooling useful to any
@@ -49,7 +47,7 @@ _CITATION_TABLE_END = "\n)\n\nassert len(CITATION_TABLE) >= 20,"
 
 def _load_checker():
     """The checker owns the citation grammar; load it by path so this script
-    can never define a second, divergent copy of `_locate_line_citation`."""
+    can never define a second, divergent copy of `_token_line_in_symbol`."""
     path = REPO / "tests" / "test_readme_claims.py"
     spec = importlib.util.spec_from_file_location("_nh_test_readme_claims", path)
     module = importlib.util.module_from_spec(spec)
@@ -120,43 +118,34 @@ def _symbol_drift(mod, resolve_path: str, tail: str, token: str) -> int | None:
         return None
     symbol = tail.rsplit(":", 1)[0]
     actual = mod._token_line_in_symbol(
-        hits[0].read_text(encoding="utf-8"), symbol, token)
+        hits[0].read_text(encoding="utf-8"), symbol, token, path=hits[0])
     return None if actual is None or actual == cited else actual
 
 
 def plan(mod, rows) -> tuple[list[Drift], list[Unfixable]]:
-    """Classify every row in *rows*: drifted (fixable), missing (unfixable —
-    nothing to anchor to), or fine (neither, skipped).
+    """Classify every row in *rows*: drifted (fixable), line-only (unfixable —
+    no symbol to anchor to), or fine (neither, skipped).
 
-    Both citation forms are handled, and they are fixable for different reasons.
-    A legacy line-form row is anchored by PROXIMITY, so a match beyond the drift
-    window is a guess and is refused. A `symbol:line` row is anchored by the
-    SYMBOL, which resolves however far the code has moved, so its number can be
-    rewritten exactly at any distance (issue #93).
+    A line-only row is unfixable because it has no symbol.
+    A `symbol:line` row is anchored by the SYMBOL, which resolves however far
+    the code has moved, so its number can be rewritten exactly at any distance.
     """
     drifts: list[Drift] = []
     unfixable: list[Unfixable] = []
     for doc, raw, resolve_path, token in rows:
         tail = raw.split(":", 1)[1]
-        if not mod._LEGACY_LINE_SPEC_RE.match(tail):
-            actual = _symbol_drift(mod, resolve_path, tail, token)
-            if actual is not None:
-                prefix = raw.split(":", 1)[0]
-                drifts.append(Drift(
-                    doc, raw, f"{prefix}:{_new_symbol_spec(tail, actual)}",
-                    resolve_path))
-            continue
-        status, found_line, detail = mod._locate_line_citation(resolve_path, tail, token)
-        if status in ("exact", "unresolved"):
-            continue
-        if status == "missing":
+        if mod._LEGACY_LINE_SPEC_RE.match(tail):
             unfixable.append(Unfixable(
                 doc, raw,
-                detail or f"{token!r} not found near `{raw}` in {resolve_path}"))
+                "citation is line-only; symbol missing, cannot auto-reanchor"
+            ))
             continue
-        prefix = raw.split(":", 1)[0]
-        new_raw = f"{prefix}:{_new_spec(tail, found_line)}"
-        drifts.append(Drift(doc, raw, new_raw, resolve_path))
+        actual = _symbol_drift(mod, resolve_path, tail, token)
+        if actual is not None:
+            prefix = raw.split(":", 1)[0]
+            drifts.append(Drift(
+                doc, raw, f"{prefix}:{_new_symbol_spec(tail, actual)}",
+                resolve_path))
     return drifts, unfixable
 
 
@@ -285,7 +274,8 @@ def reconcile_plan(mod, rows) -> tuple[list[Reconciliation], list[Unfixable]]:
             continue
 
         symbol = tail.rsplit(":", 1)[0]
-        actual = mod._token_line_in_symbol(hits[0].read_text(encoding="utf-8"), symbol, token)
+        actual = mod._token_line_in_symbol(
+            hits[0].read_text(encoding="utf-8"), symbol, token, path=hits[0])
         if actual is None:
             unfixable.append(Unfixable(doc, raw, f"symbol {symbol!r} or token not found in source"))
             continue
@@ -385,7 +375,7 @@ def _reconcile_all(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="reanchor_citations.py",
-        description="Report or rewrite drifted file.py:LINE[-LINE] "
+        description="Report or rewrite drifted path:symbol:LINE[-LINE] "
                      "citations in docs/security.md, docs/eval.md, "
                      "docs/KNOWN_ISSUES.md, docs/WINDOWS.md and their CITATION_TABLE rows in "
                      "tests/test_readme_claims.py.")
