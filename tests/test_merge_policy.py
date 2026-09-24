@@ -37,6 +37,7 @@ class _Evidence:
         self.verifiers = kw.get("verifiers")
         self.ci_state = kw.get("ci_state")
         self.ci_failed_checks = kw.get("ci_failed_checks")
+        self.ci_missing_required = kw.get("ci_missing_required")
 
 
 def _facts(**kw) -> GateFacts:
@@ -506,6 +507,49 @@ def test_ci_none_and_unknown_semantics_unchanged():
 
 
 # --------------------------------------------------------------------- #
+# ci_missing_required — required checks demonstrably never ran
+# --------------------------------------------------------------------- #
+
+
+def test_ci_missing_required_blocks_under_success_or_unknown():
+    v = _one(
+        Rule("ci", "success_or_unknown"),
+        _facts(ci_state="success", ci_missing_required=("CLA ledger", "Python")),
+    )
+    assert not v.passed
+    assert "required checks never ran" in v.detail
+    assert "CLA ledger" in v.detail
+    assert "Python" in v.detail
+
+
+def test_ci_missing_required_blocks_under_strict_success():
+    v = _one(
+        Rule("ci", "success"),
+        _facts(ci_state="success", ci_missing_required=("CLA ledger", "Python")),
+    )
+    assert not v.passed
+    assert "required checks never ran" in v.detail
+
+
+def test_ci_unknown_without_missing_required_is_still_tolerated():
+    v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state="unknown"))
+    assert v.passed
+    assert v.detail == "ci: unknown (tolerated)"
+
+
+def test_ci_none_reported_still_tolerated():
+    v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state=None))
+    assert v.passed
+    assert v.detail == "ci: none reported (tolerated)"
+
+
+def test_strict_ci_still_refuses_unknown():
+    v = _one(Rule("ci", "success"), _facts(ci_state="unknown"))
+    assert not v.passed
+    assert v.detail == "ci: unknown (strict mode requires success)"
+
+
+# --------------------------------------------------------------------- #
 # paths_within
 # --------------------------------------------------------------------- #
 
@@ -829,6 +873,29 @@ def test_facts_from_evidence_other_fields_map_correctly():
     assert facts.verifiers_ran == 2
     assert facts.verifiers_failed == ("b",)
     assert facts.ci_state == "failure"
+
+
+def test_facts_from_evidence_carries_ci_missing_required():
+    ev = _Evidence(review_verdict={"rounds": 1, "verdict": "PASSED"})
+    facts = facts_from_evidence(
+        ev, tamper_adjudications=[], ci_missing_required=["CLA ledger", "Python"],
+    )
+    assert facts.ci_missing_required == ("CLA ledger", "Python")
+    assert isinstance(facts.ci_missing_required, tuple)
+
+
+def test_facts_from_evidence_ci_missing_required_defaults_empty():
+    ev = _Evidence(review_verdict={"rounds": 1, "verdict": "PASSED"})
+    facts = facts_from_evidence(ev, tamper_adjudications=[])
+    assert facts.ci_missing_required == ()
+
+    ev2 = _Evidence(
+        review_verdict={"rounds": 1, "verdict": "PASSED"},
+        ci_missing_required=("Python",),
+    )
+    facts2 = facts_from_evidence(ev2, tamper_adjudications=[])
+    assert facts2.ci_missing_required == ("Python",)
+    assert isinstance(facts2.ci_missing_required, tuple)
 
 
 # --------------------------------------------------------------------- #

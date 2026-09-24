@@ -96,8 +96,21 @@ def repo_root() -> Path:
 
 
 def tracked_files(root: Path) -> list[str]:
-    out = subprocess.check_output(["git", "ls-files", "-z"], cwd=root, text=True)
-    return sorted(p for p in out.split("\0") if p)
+    # Read as BYTES and decode explicitly. `text=True` would enable universal-
+    # newline decoding, which rewrites a CR inside a path to LF — undoing the
+    # whole point of `-z`, which was chosen so git hands over raw bytes rather
+    # than its C-quoted form. A tracked file named `na<CR>me.txt` was then
+    # looked up as `na<LF>me.txt` and the script died with FileNotFoundError.
+    #
+    # surrogateescape, not strict: git path bytes need not be valid UTF-8, and
+    # a strict decode would turn such a path into a crash. surrogateescape
+    # round-trips those bytes through `root / rel` (os.fsencode uses the same
+    # handler on POSIX), so `hash_path` still opens the real file; the same
+    # bytes come back out when the row is encoded with `errors="surrogateescape"`
+    # on write. On Windows, filenames are natively str, and neither CR nor
+    # non-UTF-8 names are creatable there — this path is POSIX in practice.
+    out = subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
+    return sorted(p for p in out.decode("utf-8", "surrogateescape").split("\0") if p)
 
 
 def hash_path(root: Path, rel: str) -> str:
@@ -108,11 +121,22 @@ def hash_path(root: Path, rel: str) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def _read_manifest_text(path: Path) -> str:
+    """Bytes in, explicit decode out — same reason as `tracked_files`."""
+    return path.read_bytes().decode("utf-8", "surrogateescape")
+
+
 def parse_manifest(text: str) -> dict[str, str]:
     """``{path: sha256}``. A row that cannot be parsed is an error, not a skip."""
     out: dict[str, str] = {}
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        s = line.rstrip("\n")
+    # Split on "\n" only. `splitlines()` also splits on a bare CR, which turns
+    # one row naming `na<CR>me.txt` into two rows that parse as neither.
+    # One trailing CR is still dropped, so a CRLF checkout (core.autocrlf) of
+    # an LF-written manifest keeps working; the single case that stays
+    # ambiguous is a path whose name ENDS in CR, and that is called out here
+    # rather than silently mis-parsed.
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        s = line[:-1] if line.endswith("\r") else line
         if not s.strip() or s.lstrip().startswith("#"):
             continue
         digest, sep, path = s.partition("  ")
@@ -215,7 +239,7 @@ def _previous_rows(manifest_path: Path) -> dict[str, str]:
     if not manifest_path.exists():
         return {}
     try:
-        return parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        return parse_manifest(_read_manifest_text(manifest_path))
     except (SystemExit, OSError, UnicodeDecodeError):
         return {}
 
@@ -363,7 +387,9 @@ def write_manifest(root: Path) -> int:
     # that path is the derived-artefact conflict resolver, the crash surfaced as
     # pull requests escalating to a human for a manifest a machine could have
     # regenerated. `write_bytes` needs no version at all.
-    manifest_path.write_bytes((HEADER + body).encode("utf-8"))
+    # surrogateescape here matches the decode handler `tracked_files` uses, so
+    # a non-UTF-8 path round-trips instead of raising UnicodeEncodeError.
+    manifest_path.write_bytes((HEADER + body).encode("utf-8", "surrogateescape"))
     _warn_if_nearly_every_row_changed(previous, rows)
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0
@@ -375,7 +401,7 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
         print(f"FAIL: {MANIFEST_NAME} not found at the repository root",
               file=sys.stderr)
         return 1
-    listed = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    listed = parse_manifest(_read_manifest_text(manifest_path))
     tracked = tracked_files(root)
     unpinnable = load_unpinnable(root)
 

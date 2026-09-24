@@ -9,6 +9,8 @@ from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.review.diff_coverage import (
     DiffCoverageError,
     InspectionTracker,
+    _patch_path,
+    _unquote_path,
     budget_diff,
 )
 from no_human.review.reviewer import (
@@ -63,6 +65,42 @@ def test_impossible_file_count_fails_instead_of_second_level_truncation():
     raw = "".join(_chunk(f"very-long-file-name-{i:03d}.py", "x") for i in range(40))
     with pytest.raises(DiffCoverageError):
         budget_diff(raw, 700)
+
+
+def test_octal_escaped_non_ascii_header_path_decodes_to_the_real_path():
+    """git C-escapes non-ASCII bytes octal-per-byte, one octal triplet per raw
+    BYTE (e.g. \\303\\251 for the two UTF-8 bytes of `é`). `ast.literal_eval`
+    reads those as Python string-literal escapes and produces one code point
+    per octal group instead of decoding the byte sequence as UTF-8 — this
+    fails on main, which yields "docs/Ã©val.md" (mojibake) instead."""
+    escaped = r"docs/\303\251val.md"
+    assert _unquote_path(f'"a/{escaped}"') == "docs/éval.md"
+
+    chunk = (
+        f'diff --git "a/{escaped}" "b/{escaped}"\n'
+        f'--- "a/{escaped}"\n'
+        f'+++ "b/{escaped}"\n'
+        "@@ -1 +1 @@\n-old\n+" + "E" * 4000 + "\n"
+    )
+    assert _patch_path(chunk) == "docs/éval.md"
+
+    raw = "stat header\n" + chunk + _chunk("a.py", "A" * 4000) + _chunk("z.py", "B" * 4000)
+    rendered, cut = budget_diff(raw, 2500)
+    assert "docs/éval.md" in cut
+    assert "- docs/éval.md\n" in rendered
+
+
+@pytest.mark.parametrize(("token", "expected"), [
+    ("a/src/a.py", "src/a.py"),
+    ('"a/src/a.py"', "src/a.py"),
+    ('"b/dir/with space.py"', "dir/with space.py"),
+    ("b/plain/path.py", "plain/path.py"),
+])
+def test_ascii_paths_quoted_and_unquoted_decode_unchanged(token, expected):
+    """Pin the ordinary cases so the shared decoder cannot alter them: a
+    plain unquoted token, a quoted plain path, and a quoted path with a
+    space (git quotes for the space, not for encoding reasons)."""
+    assert _unquote_path(token) == expected
 
 
 def _commit(repo: Path, message: str) -> None:
@@ -143,6 +181,60 @@ async def test_inspected_cut_file_allows_the_real_verdict(tmp_path):
     assert backend.calls == 1
 
 
+class _NonAsciiCoverageBackend:
+    model = "test"
+
+    def __init__(self, inspect: bool):
+        self.inspect = inspect
+        self.calls = 0
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, on_event=None, **kwargs):
+        self.calls += 1
+        if self.inspect and on_event is not None:
+            on_event(AgentEvent(
+                "tool_use",
+                tool_name="Read",
+                tool_input={"file_path": "docs/éval.md"},
+            ))
+        return AgentResult(
+            final_text=_passing_block(),
+            num_turns=1,
+            is_error=False,
+            tokens_used=10,
+            session_id="coverage",
+            stop_reason="end_turn",
+        )
+
+
+@pytest.mark.asyncio
+async def test_reviewer_reaches_a_verdict_over_a_non_ascii_cut_path(tmp_path):
+    """The end-to-end path: a required inspection spelled with a non-ASCII
+    character must be creditable, not just decodable — this exercises the
+    fix through InspectionTracker and the reviewer, not only `_unquote_path`."""
+    backend = _NonAsciiCoverageBackend(inspect=True)
+    reviewer = AdversarialReviewer(backend=backend, timeout=1)
+    decision = await reviewer._agent_review(
+        "prompt", tmp_path, max_turns=1,
+        required_inspections=["docs/éval.md"],
+    )
+    assert decision.passed is True
+    assert backend.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reviewer_reports_unavailable_when_non_ascii_path_never_named(tmp_path):
+    """The negative twin: the check must stay fail-closed for a non-ASCII
+    required path exactly as it does for an ASCII one."""
+    backend = _NonAsciiCoverageBackend(inspect=False)
+    reviewer = AdversarialReviewer(backend=backend, timeout=1)
+    with pytest.raises(ReviewerUnavailable):
+        await reviewer._agent_review(
+            "prompt", tmp_path, max_turns=1,
+            required_inspections=["docs/éval.md"],
+        )
+    assert backend.calls == 2
+
+
 # ── InspectionTracker ─────────────────────────────────────────────────── #
 # The reviewer-level tests above prove the wiring. These pin the traversal
 # itself, which is the part that decides whether a real tool call counts.
@@ -150,6 +242,30 @@ async def test_inspected_cut_file_allows_the_real_verdict(tmp_path):
 
 def _tool_use(payload):
     return AgentEvent("tool_use", tool_name="Read", tool_input=payload)
+
+
+def test_tracker_credits_a_non_ascii_path_named_in_a_tool_input():
+    """Even a correctly decoded path is uncreditable if `_PATH_TOKEN` splits
+    it on the non-ASCII byte — this fails on main against the ASCII-only
+    class regardless of the decoder fix."""
+    tracker = InspectionTracker(["docs/éval.md"])
+    tracker.note_event(_tool_use({"file_path": "docs/éval.md"}))
+    assert tracker.unreferenced() == []
+    assert tracker.rejection() == ""
+
+    free_form = InspectionTracker(["docs/éval.md"])
+    free_form.note_event(_tool_use({"pattern": "read docs/éval.md now"}))
+    assert free_form.unreferenced() == []
+    assert free_form.rejection() == ""
+
+
+def test_tracker_still_rejects_ascii_near_miss():
+    """`_PATH_TOKEN` widened to admit non-ASCII word characters, but must not
+    admit anything the ASCII class did not — an ASCII near-miss must still
+    be rejected exactly as before."""
+    tracker = InspectionTracker(["Dockerfile"])
+    tracker.note_event(_tool_use({"file_path": "Dockerfile.mcp"}))
+    assert tracker.unreferenced() == ["Dockerfile"]
 
 
 def test_tracker_accepts_a_path_named_anywhere_in_a_nested_tool_input():
