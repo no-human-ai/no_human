@@ -35,6 +35,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..proc import real_python
 from .approve_merge import _cap, _sh
 
 #: Conflict-marker prefixes git writes into a merged blob. Hosted here (not
@@ -64,6 +65,16 @@ _DICT_TO_MEASURE = {
 }
 
 _BUDGET_TEST_TIMEOUT_S = 300
+
+#: `run_budget_test` keys its "could not run" branch on this exact string, and
+#: `derived_conflict.py` compares against it too, so the honesty distinction
+#: between "the proof could not run" and "the proof ran and failed" is worded
+#: in exactly one place.
+NO_INTERPRETER_DETAIL = (
+    "could not run the structural-budget proof: no real Python interpreter "
+    "is available (frozen build, and no venv/PATH interpreter resolved) — "
+    "the test was NOT run, so this is not a failing proof"
+)
 
 
 def parse_conflict_hunks(merged_text: str) -> list[list[list[str]]] | None:
@@ -353,11 +364,31 @@ def measure(worktree_path: str, ours_blob_text: str) -> tuple[dict | None, str]:
     return {name: dict(scanned[idx]) for name, idx in _DICT_TO_MEASURE.items()}, ""
 
 
-def run_budget_test(worktree_path: str, timeout: int = _BUDGET_TEST_TIMEOUT_S) -> tuple[bool, str]:
+def run_budget_test(worktree_path: str, timeout: int = _BUDGET_TEST_TIMEOUT_S,
+                     *, repo_root: str | Path | None = None) -> tuple[bool, str]:
     """Run `pytest tests/test_structural_budget.py` inside *worktree_path*
     under an isolated HOME, as proof that a mechanically re-anchored value is
     actually correct (never trust the arithmetic alone). Returns
-    `(passed, captured_output)`."""
+    `(passed, captured_output)`.
+
+    *repo_root* is the PRIMARY checkout — the one whose `.venv` actually has
+    pytest installed. A fresh `nh-derived-*` git worktree (`worktree_path`)
+    has no `.venv` of its own (it is not tracked), so it is offered to
+    `proc.real_python` only as a harmless second chance, never the first: in
+    a PyInstaller-frozen build `sys.executable` IS the frozen `nh` binary, and
+    `[sys.executable, "-m", "pytest", ...]` re-enters the click CLI instead of
+    running anything (see `proc.real_python`'s docstring). When neither venv
+    nor a PATH interpreter resolves, this fails closed WITHOUT shelling out
+    at all and returns `(False, NO_INTERPRETER_DETAIL)` — that return means
+    "the proof was never run", not "the proof failed"; callers must not
+    conflate the two.
+    """
+    python = real_python(
+        Path(repo_root) / ".venv" if repo_root is not None else None,
+        Path(worktree_path) / ".venv",
+    )
+    if python is None:
+        return False, NO_INTERPRETER_DETAIL
     tmp_home = tempfile.mkdtemp(prefix="nh-budget-proof-")
     env = dict(os.environ)
     env["HOME"] = tmp_home
@@ -365,7 +396,7 @@ def run_budget_test(worktree_path: str, timeout: int = _BUDGET_TEST_TIMEOUT_S) -
     env["PYTHONPATH"] = str(Path(worktree_path) / "src")
     try:
         proc = _sh(
-            [sys.executable, "-m", "pytest", BUDGET_TEST_PATH, "-q",
+            [python, "-m", "pytest", BUDGET_TEST_PATH, "-q",
              "-p", "no:cacheprovider"],
             cwd=worktree_path, timeout=timeout, env=env,
         )

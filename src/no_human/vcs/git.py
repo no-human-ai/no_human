@@ -134,6 +134,13 @@ def _behind_message(branch: str, remote: str, sha: str) -> str:
     )
 
 
+#: Relations that read "diverged" before `ahead` existed. Callers that have
+#: not been taught the new value normalize through this, so their behaviour
+#: on an ahead branch is byte-identical to before.
+def _legacy_relation(relation: str) -> str:
+    return "diverged" if relation == "ahead" else relation
+
+
 #: Env vars that OUTRANK `-c user.name=`/`-c user.email=` in git's own
 #: precedence order. The orchestrator exports these into the process env for
 #: the coder's Bash tool (`Orchestrator._agent_git_identity`) — on that same
@@ -1584,8 +1591,10 @@ class GitRepo:
 
         Returns ``"behind"`` (local is an ancestor of the remote tip — the
         remote holds commits this tree does not, e.g. an earlier attempt's
-        push), ``"diverged"`` (neither is an ancestor of the other, e.g. a
-        local rebase of an already-pushed branch), ``"up_to_date"``, or
+        push), ``"ahead"`` (the remote tip is an ancestor of local — the
+        branch simply hasn't been pushed since review; safe to fast-forward),
+        ``"diverged"`` (neither is an ancestor of the other, e.g. a local
+        rebase of an already-pushed branch), ``"up_to_date"``, or
         ``"unknown"`` when the relation cannot be determined (branch never
         pushed, remote unreachable, or its object isn't available locally —
         fail-open to today's behaviour: nothing here BLOCKS a force, only a
@@ -1621,7 +1630,11 @@ class GitRepo:
             return "up_to_date"
         if not self._have_remote_commit(remote, branch, remote_sha, timeout):
             return "unknown"
-        return "behind" if self.is_ancestor(local, remote_sha) else "diverged"
+        if self.is_ancestor(local, remote_sha):
+            return "behind"
+        if self.is_ancestor(remote_sha, local):
+            return "ahead"
+        return "diverged"
 
     def diff(self, ref: str = "HEAD~1") -> str:
         return self._run("diff", ref, "HEAD", check=False)
@@ -1738,7 +1751,8 @@ class GitRepo:
         args = ["push"]
         if force_with_lease:
             try:
-                relation = self.remote_branch_relation(branch, remote=remote)
+                relation = _legacy_relation(
+                    self.remote_branch_relation(branch, remote=remote))
             except Exception:
                 # Fail OPEN: an unreachable remote, an unpushed branch, or an
                 # auth failure must never silently disable delivery — only a
@@ -1746,8 +1760,8 @@ class GitRepo:
                 relation = "unknown"
             if relation == "behind":
                 raise PushBehindRemote(_behind_message(branch, remote, sha))
-            # "unknown" / "diverged" / "up_to_date" all fall through and
-            # force, exactly as today.
+            # "unknown" / "diverged" (incl. "ahead", normalized above) /
+            # "up_to_date" all fall through and force, exactly as today.
             # NO fetch here — see the docstring: refreshing the tracking ref
             # is what would make the lease vacuous.
             args += ["--force-with-lease"]

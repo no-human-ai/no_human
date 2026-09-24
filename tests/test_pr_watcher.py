@@ -640,6 +640,91 @@ async def test_default_pr_checks_required_lookup_failure_degrades_to_unscoped(mo
     }]
 
 
+async def test_checks_and_required_surfaces_the_required_names(monkeypatch):
+    """`default_pr_checks_and_required` is the one caller
+    (`ci_rollup.fetch_ci_rollup`) needs to tell "required-ness lookup
+    succeeded" from "required-ness lookup failed" — it must hand back the
+    resolved required-name set alongside the checks, not just the per-check
+    `required` flags (which `ci_rollup.aggregate_rollup` never consults for
+    that discrimination, because they fail open to `False` on the same
+    lookup failure)."""
+    import no_human.vcs.pr_watcher as pw
+
+    async def fake_run_cli(cmd):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return json.dumps({"statusCheckRollup": [
+                {"name": "File inventory", "conclusion": "FAILURE"},
+                {"name": "Optional lint", "conclusion": "FAILURE"},
+            ]})
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            assert "--required" in cmd
+            return json.dumps([{"name": "File inventory"}])
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(pw, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(pw.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks, required_names = await pw.default_pr_checks_and_required("acme/svc#7")
+    assert required_names == ("File inventory",)
+    by_name = {c["name"]: c for c in checks}
+    assert by_name["File inventory"]["required"] is True
+    assert by_name["Optional lint"]["required"] is False
+
+
+async def test_checks_and_required_is_empty_when_the_required_lookup_fails(monkeypatch):
+    """A failed/older-gh required lookup must degrade `required_names` to
+    `()` — never to a set that merely happens to be empty for some other
+    reason — so `ci_rollup.aggregate_rollup` can tell this apart from "the
+    lookup succeeded and confirmed zero required checks" is moot: both read
+    as `()` and both tolerate, by design (see `ci_rollup.py`'s module
+    docstring)."""
+    import no_human.vcs.pr_watcher as pw
+
+    async def fake_run_cli(cmd):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return json.dumps({"statusCheckRollup": [
+                {"name": "File inventory", "conclusion": "FAILURE"},
+            ]})
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            return None  # simulates a failed/older-gh required lookup
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(pw, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(pw.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks, required_names = await pw.default_pr_checks_and_required("acme/svc#7")
+    assert required_names == ()
+    assert checks == [{
+        "name": "File inventory", "status": "fail", "link": "",
+        "required": False,
+    }]
+
+
+async def test_default_pr_checks_is_element_zero_of_checks_and_required(monkeypatch):
+    """`default_pr_checks` is documented as a thin wrapper over
+    `default_pr_checks_and_required` — pin that its output is exactly
+    element 0 of the richer function's output, not a re-derived shape that
+    could drift from it."""
+    import no_human.vcs.pr_watcher as pw
+
+    async def fake_run_cli(cmd):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return json.dumps({"statusCheckRollup": [
+                {"name": "File inventory", "conclusion": "FAILURE"},
+                {"name": "Optional lint", "conclusion": "SUCCESS"},
+            ]})
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            return json.dumps([{"name": "File inventory"}])
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(pw, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(pw.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks_and_required = await pw.default_pr_checks_and_required("acme/svc#7")
+    checks = await pw.default_pr_checks("acme/svc#7")
+    assert checks == checks_and_required[0]
+
+
 async def test_comment_fetch_encodes_a_raw_slash_short_ref(cli_recorder):
     """The read side of the same defect (`check_pr_comments` -> notes)."""
     calls, replies = cli_recorder
