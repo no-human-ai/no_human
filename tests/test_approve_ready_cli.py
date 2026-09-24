@@ -566,11 +566,10 @@ def test_remote_only_pr_branch_is_probed_and_reported_as_conflict(
     assert "not landed" in result_yes.output
 
 
-def test_unknown_base_degrades_open_and_still_lands(tmp_path, monkeypatch):
-    """When the base cannot be resolved at all (fail-open contract), the
-    task is listed with an "unknown" merge marker, is NOT treated as a
-    conflict, and --yes still lands it — a git failure must never turn a
-    genuinely landable task into a refusal."""
+def test_unknown_base_is_not_landed(tmp_path, monkeypatch):
+    """When the base cannot be resolved at all, the
+    task is listed with an "unknown" merge marker and is NOT counted as
+    ready to land, nor is it landed by --yes (issue #512)."""
     db = tmp_path / "nh.db"
 
     def _repo_with_no_base(tmp_path, name="repo"):
@@ -592,14 +591,21 @@ def test_unknown_base_degrades_open_and_still_lands(tmp_path, monkeypatch):
         db, tmp_path, title="No Base", repo_name="repo",
         repo_factory=_repo_with_no_base)
 
-    result = _invoke(approve, db, ["--ready", "--yes"])
+    result_no_yes = _invoke(approve, db, ["--ready"])
+    assert result_no_yes.exit_code == 0, result_no_yes.output
+    # Rich wraps text, so flatten before asserting
+    flattened_no_yes = " ".join(result_no_yes.output.split())
+    assert "1 task(s) have unknown mergeability and cannot be auto-landed" in flattened_no_yes
+    assert "0 task(s) ready to land" in flattened_no_yes
 
+    result = _invoke(approve, db, ["--ready", "--yes"])
     assert result.exit_code == 0, result.output
-    assert calls == [task_id]
-    assert "merged" in result.output
+    assert calls == []
+    assert "not landed" in result.output
+    assert "mergeability is unknown" in result.output
 
     t, _ = _task_state(db, task_id)
-    assert t.status is TaskStatus.DONE
+    assert t.status is TaskStatus.AWAITING_APPROVAL
 
 
 # --------------------------------------------------------------------------- #
