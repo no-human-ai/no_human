@@ -1,54 +1,97 @@
 # How I verified this — full log
 
-_Harness-captured record for task `bc7390dc`, commit `a5e49997b1c123e1d576532983e695f072010e41` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bc7390dc`, commit `e9fb238064a882e4268592395100959284ba0f85` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -60`
+- `uv run pytest -q tests/test_approve_merge.py tests/test_already_satisfied_landing.py tests/test_profile_resolve.py -n 4 2>&1 | tail -80`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f
-Installed 73 packages in 478ms
-..F................                                                      [100%]
-=================================== FAILURES ===================================
-_______________________ test_no_new_oversized_functions ______
-[... 662 of 1,801 characters omitted from the middle ...]
-EN_FUNC...s not frozen'] == []
-E         
-E         Left contains one more item: 'FROZEN_FUNCTION_LINES: vcs/approve_merge.py:_land_in_worktree is 302 (> 300) and is not frozen'
-E         Use -v to get more diff
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.8407.9167e472
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.8407.9167e472
+Installed 73 packages in 205ms
+bringing up nodes...
+bringing up nodes...
 
-tests/test_structural_budget.py:2635: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_new_oversized_functions - Ass...
-1 failed, 18 passed in 7.03s
-```  
-  _excerpt - 1,795 characters of output in total_
+........................................................................ [ 77%]
+.....................                                                    [100%]
+93 passed in 118.12s (0:01:58)
+```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
+- `uv run pytest -q tests/test_approve_merge.py -k test_the_merge_gate_never_shells_out_to_the_frozen_nh_binary -v 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...................                                                      [100%]
-19 passed in 3.34s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-931mk2i2
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.8407.9167e472
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 79 items / 78 deselected / 1 selected
+
+tests/test_approve_merge.py .                                            [100%]
+
+======================= 1 passed, 78 deselected in 2.35s =======================
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_approve_merge.py -k test_the_full_gate_runs_the_repo_profile_test_command -q 2>&1 | tail -30`
+- `uv run pytest -q tests/test_approve_merge.py -k "test_the_full_gate_runs_the_repo_profile_test_command or test_a_non_pytest_profile_command_forces_the_full_gate" -v 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed, 78 deselected in 9.36s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-9v2yn98_
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.8407.9167e472
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 79 items / 77 deselected / 2 selected
+
+tests/test_approve_merge.py ..                                           [100%]
+
+======================= 2 passed, 77 deselected in 3.45s =======================
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f timeout 115 uv run pytest tests/test_approve_merge.py tests/test_profile_resolve.py tests/test_merge_policy_wiring.py -q 2>&1 | tail -20`
+- `uv run pytest -q tests/test_profile_resolve.py -n 4 2>&1 | tail -20`
 
 ```
-(eval):2: command not found: timeout
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+.....                                                                    [100%]
+5 passed in 3.31s
+```
+
+- `uv run pytest -q tests/test_merge_policy_wiring.py -n 4 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+.......................                                                  [100%]
+23 passed in 6.08s
+```
+
+- `uv run pytest -q tests/test_approve_merge.py tests/test_already_satisfied_landing.py tests/test_profile_resolve.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_merge_policy_wiring.py -n 4 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 22%]
+.................................................s.s.s.s................ [ 45%]
+......................s.s.s.s.s.s.............s......................... [ 68%]
+...........s............................................................ [ 91%]
+...........................                                              [100%]
+303 passed, 12 skipped in 45.66s
 ```
 
 

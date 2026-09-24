@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `bc7390dc`, commit `a5e49997b1c123e1d576532983e695f072010e41` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bc7390dc`, commit `e9fb238064a882e4268592395100959284ba0f85` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** PR conflicts with main: https://github.com/no-human-ai/no_human/pull/491 (mergeable=CONFLICTING, mergeStateStatus=DIRTY)
 
