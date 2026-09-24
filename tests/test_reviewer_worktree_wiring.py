@@ -38,7 +38,7 @@ import pytest
 
 from no_human.config import load_config
 from no_human.core import reviewer_worktree as rw
-from no_human.core.orchestrator import Orchestrator
+from no_human.core.orchestrator import Orchestrator, _integrity_failure_detail
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision, ReviewerUnavailable
@@ -369,4 +369,80 @@ async def test_a_bookkeeping_config_write_keeps_the_verdict_and_records_an_event
     event = benign_events[0]
     assert ".git/common/config" in event.get("paths", []), event
     assert "branch.x.rebase" in event.get("keys", []), event
+
+
+async def test_a_shared_config_change_keeps_the_verdict_and_records_an_environment_event(
+    store, tmp_path, monkeypatch,
+):
+    """The production wiring for `delta.environment` (reviewer-worktree-
+    environment-change): a `compare()` result whose ONLY change is a
+    non-benign key written to the shared `.git/common/config` (e.g. a
+    `fork<N>` remote added by `gh pr checkout` in the main checkout while a
+    review is in flight) must still return the reviewer's PASS. Shared state
+    records no writer, so this must be disclosed through its own event kind
+    — never through `reviewer_wrote`, which asserts the reviewer wrote it and
+    discards the verdict.
+    """
+    def _environment_only(*a, **k):
+        return rw.Delta(added=[], modified=[], deleted=[],
+                        environment=[".git/common/config"],
+                        environment_keys=["remote.fork497.url"])
+
+    monkeypatch.setattr(rw, "compare", _environment_only)
+
+    events = []
+    repo = _git_repo(tmp_path / "repo")
+    cfg = load_config(tmp_path / "config.yaml")
+    orch = Orchestrator(store, cfg.data, _Backend(), SlackNotifier(None),
+                        event_sink=events.append)
+    reviewer = _PassingReviewer()
+    orch.reviewer = reviewer
+
+    decision = await orch._run_reviewer(_task(), repo_path=repo)
+
+    assert reviewer.calls == 1
+    assert decision.passed is True, (
+        "an environment-only shared-config change discarded the reviewer's "
+        "PASS instead of accepting it")
+
+    written = [e for e in events
+               if (e.get("kind") if isinstance(e, dict) else None)
+               == "reviewer_wrote"]
+    assert not written, (
+        f"a shared config change was reported through reviewer_wrote, "
+        f"which discards the verdict: {written}")
+
+    env_events = [e for e in events
+                  if (e.get("kind") if isinstance(e, dict) else None)
+                  == "reviewer_worktree_environment_change"]
+    assert len(env_events) == 1, (
+        f"expected exactly one environment-change event, got: {env_events}")
+    event = env_events[0]
+    assert ".git/common/config" in event.get("paths", []), event
+    assert "remote.fork497.url" in event.get("keys", []), event
+    text = event.get("text", "")
+    assert "the reviewer wrote" not in text, (
+        f"an environment event must not assert reviewer authorship: {text!r}")
+    assert "environment" in text, text
+
+
+def test_a_git_only_delta_does_not_claim_the_reviewer_wrote_it():
+    """`_integrity_failure_detail` must not assert the reviewer wrote the
+    change when every changed path is under `.git/` — shared/administrative
+    state whose writer is not established by the delta alone. It must still
+    report the change as a discard: `.git`-path changes are flagged, not
+    reverted, and only genuinely attributable worktree writes get the
+    stronger "the reviewer wrote" framing (see
+    `test_a_reviewer_that_really_wrote_reports_its_path_and_is_reverted`,
+    which uses a non-`.git/` path and keeps that framing).
+    """
+    delta = rw.Delta(added=[], modified=[".git/admin/hooks/post-checkout"],
+                     deleted=[])
+
+    detail = _integrity_failure_detail(delta)
+
+    assert "the reviewer wrote to the worktree it was judging" not in detail, (
+        f"a .git-only delta wrongly claimed reviewer authorship: {detail!r}")
+    assert "not established" in detail, detail
+    assert ".git" in detail, detail
 

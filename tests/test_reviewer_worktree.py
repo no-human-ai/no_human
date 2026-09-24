@@ -381,8 +381,10 @@ def test_non_gc_git_dir_writes_still_discard(worktree_env):
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
     assert not delta.is_empty()
-    assert any("/config" in p and "core.hookspath" in p for p in delta.modified), (
-        f"a core.hooksPath config change was excused: modified={delta.modified}")
+    assert any("/config" in p for p in delta.environment), (
+        f"a core.hooksPath config change was excused: environment={delta.environment}")
+    assert "core.hookspath" in delta.environment_keys, (
+        f"the core.hooksPath key was not disclosed: environment_keys={delta.environment_keys}")
     assert ".git/admin/hooks/post-checkout" in delta.added, (
         f"a newly planted hook was excused: added={delta.added}")
     assert any(p.endswith("common/config.lock") for p in delta.added), (
@@ -519,9 +521,49 @@ def test_config_reserialization_excused_but_key_change_and_source_edit_caught(
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
     assert "src/main.py" in delta.modified, (
         f"reviewer source edit was not caught: modified={delta.modified}")
-    assert any("/config" in p for p in delta.modified), (
-        "an include.path addition to config was not caught: "
-        f"modified={delta.modified}")
+    assert any("/config" in p for p in delta.environment), (
+        "an include.path addition to config was not disclosed as an "
+        f"environment change: environment={delta.environment}")
+
+
+def test_a_fork_remote_added_by_another_checkout_is_an_environment_event_not_a_reviewer_write(
+    worktree_env,
+):
+    """Root-cause regression for task ed0aa16a attempt 15: `gh pr checkout`
+    running in the MAIN checkout (never the reviewer worktree under test)
+    adds a `fork<N>` remote, which lands in `.git/common/config` — a file
+    shared by every worktree and the main checkout, with no writer recorded.
+    The guard used to byte-hash that file and report ANY change in it as
+    `reviewer_wrote`, discarding a completed, valid verdict; three such
+    remotes (`fork497`, `fork500`, `fork513`) did exactly this in the
+    incident. `remote.*.url` is not on the benign allowlist (it is a real,
+    non-bookkeeping key), so this must route to `Delta.environment`, not to
+    `Delta.modified` — the verdict must be accepted, not discarded.
+    """
+    wt = worktree_env["wt"]
+    up = worktree_env["up"]
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    # Simulate `gh pr checkout` in the MAIN checkout, a different process and
+    # directory than the reviewer worktree being judged.
+    _git(up, "remote", "add", "fork497", "https://github.com/x/y.git")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert delta.is_empty(), (
+        "a fork remote added by another checkout to the shared config "
+        "discarded the verdict instead of being reported as an environment "
+        f"event: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}")
+    assert any(p.endswith("common/config") or p == ".git/common/config"
+               for p in delta.environment), (
+        f"the shared config change was not disclosed: environment={delta.environment}")
+    assert "remote.fork497.url" in delta.environment_keys, (
+        f"the fork remote key was not disclosed: environment_keys={delta.environment_keys}")
+    offending = [*delta.added, *delta.modified, *delta.deleted]
+    assert not any("fork497" in p for p in offending), (
+        f"the fork remote was charged to the reviewer instead of the "
+        f"environment: {offending}")
 
 
 def test_a_bookkeeping_branch_key_written_to_the_shared_config_is_excused_and_disclosed(
@@ -586,9 +628,9 @@ def test_a_non_bookkeeping_config_key_and_a_tracked_edit_still_discard(
     (wt / "src" / "main.py").write_text("v2 -- reviewer edit\n")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    assert any("/config" in p for p in delta.modified), (
-        f"a non-allowlisted config key was excused instead of caught: "
-        f"modified={delta.modified} benign={delta.benign}")
+    assert any("/config" in p for p in delta.environment), (
+        f"a non-allowlisted config key was excused instead of disclosed as "
+        f"an environment change: environment={delta.environment} benign={delta.benign}")
     assert not any(p.endswith("/config") for p in delta.benign), (
         f"a non-allowlisted config key landed in benign: benign={delta.benign}")
     assert "src/main.py" in delta.modified, (
@@ -611,18 +653,21 @@ def test_a_non_bookkeeping_config_key_and_a_tracked_edit_still_discard(
     )
 
 
-def test_a_non_benign_config_key_is_named_in_the_discard_alongside_a_benign_one(
+def test_a_non_benign_config_key_is_named_in_the_environment_disclosure_alongside_a_benign_one(
     worktree_env,
 ):
-    """Task reviewer-worktree-integrity-name-nonbenign-keys.
+    """Task reviewer-worktree-shared-config-attribution (formerly
+    reviewer-worktree-integrity-name-nonbenign-keys).
 
     A discard used to name only the FILE (`.git/common/config`), never WHICH
     key kept it a violation — so a real execution-surface write (`alias.*`,
     `include.path`, `core.hooksPath`) was indistinguishable from a new
     bookkeeping key that SHOULD be allowlisted, and the allowlist could never
-    be safely closed. This plants ONE benign key and ONE non-benign key in
-    the same write and asserts the discard names the non-benign one and does
-    NOT falsely name the benign one.
+    be safely closed. A readable config key-set change no longer discards on
+    its own at all (see the module docstring's "Fourth re-scope"): this
+    plants ONE benign key and ONE non-benign key in the same write and
+    asserts the verdict is accepted while the ENVIRONMENT disclosure names
+    the non-benign key and does NOT falsely name the benign one.
     """
     wt = worktree_env["wt"]
     common_dir = worktree_env["common_dir"]
@@ -634,17 +679,17 @@ def test_a_non_benign_config_key_is_named_in_the_discard_alongside_a_benign_one(
     _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    assert not delta.is_empty(), (
-        "a mixed benign/non-benign config change was excused: "
-        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
+    assert delta.is_empty(), (
+        "a mixed benign/non-benign config change (no tracked-path edit) "
+        "discarded the verdict instead of routing to the environment "
+        f"disclosure: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}")
 
-    entries = [p for p in delta.modified
-               if p.startswith(".git/") and "/config" in p]
-    assert entries, f"no config entry in modified: {delta.modified}"
-    entry = entries[0]
-    assert "(non-benign keys: alias.pwn)" in entry, entry
-    assert "branch.x.rebase" not in entry, (
-        f"the benign key was falsely named as non-benign: {entry}")
+    entries = [p for p in delta.environment if "/config" in p]
+    assert entries, f"no config entry in environment: {delta.environment}"
+    assert "alias.pwn" in delta.environment_keys, delta.environment_keys
+    assert "branch.x.rebase" not in delta.environment_keys, (
+        f"the benign key was falsely named as non-benign: {delta.environment_keys}")
     assert delta.nonbenign_keys == ["alias.pwn"], delta.nonbenign_keys
     assert "branch.x.rebase" not in delta.benign_keys, (
         "the benign key was disclosed as excused even though the whole "
@@ -673,8 +718,11 @@ def test_a_benign_only_config_change_names_nothing_as_non_benign(worktree_env):
 
 
 def test_the_non_benign_key_list_is_capped_and_reports_the_remainder(worktree_env):
-    """A pathological diff must not blow the persisted verdict message up —
-    same shape as `orchestrator._INTEGRITY_PATHS_SHOWN`'s per-bucket cap."""
+    """A pathological diff must not blow the persisted disclosure event up —
+    same shape as `orchestrator._INTEGRITY_PATHS_SHOWN`'s per-bucket cap. All
+    changes here are non-benign config keys with no tracked-path edit, so the
+    whole delta routes to `environment`/`environment_keys` and stays
+    non-discarding (see the module docstring's "Fourth re-scope")."""
     wt = worktree_env["wt"]
     common_dir = worktree_env["common_dir"]
     cfg = common_dir / "config"
@@ -685,18 +733,21 @@ def test_the_non_benign_key_list_is_capped_and_reports_the_remainder(worktree_en
         _git(wt, "config", "--file", str(cfg), f"alias.pwn{i}", "!true")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    entries = [p for p in delta.modified
-               if p.startswith(".git/") and "/config" in p]
-    assert entries, f"no config entry in modified: {delta.modified}"
-    entry = entries[0]
+    assert delta.is_empty(), (
+        "a non-benign-only config change (no tracked-path edit) discarded "
+        f"the verdict: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}")
 
-    assert "and 3 more" in entry, entry
+    entries = [p for p in delta.environment if "/config" in p]
+    assert entries, f"no config entry in environment: {delta.environment}"
+
     shown = [f"alias.pwn{i}" for i in range(rw._MAX_NONBENIGN_KEYS_SHOWN)]
     for key in shown:
-        assert key in entry, entry
+        assert key in delta.environment_keys, delta.environment_keys
     beyond = [f"alias.pwn{i}" for i in range(rw._MAX_NONBENIGN_KEYS_SHOWN, n)]
     for key in beyond:
-        assert key not in entry, f"a key beyond the cap was named: {key} in {entry}"
+        assert key not in delta.environment_keys, (
+            f"a key beyond the cap was named: {key} in {delta.environment_keys}")
     assert len(delta.nonbenign_keys) == rw._MAX_NONBENIGN_KEYS_SHOWN, delta.nonbenign_keys
 
 
@@ -768,8 +819,11 @@ def test_the_reviewer_identity_written_to_the_shared_config_is_excused_and_discl
 def test_reviewer_identity_plus_an_exec_surface_key_still_discards(worktree_env):
     """Positive control: the allowlist added by this task must not widen
     past `user.name`/`user.email`. A genuine execution-surface key
-    (`alias.pwn`) alongside the reviewer's identity write must still
-    discard the whole verdict — the existing all()-benign gate holds."""
+    (`alias.pwn`) alongside the reviewer's identity write, with NO tracked
+    edit, is a readable config key-set change and now stays a non-discarding
+    environment disclosure (see the module docstring's "Fourth re-scope") —
+    but it must still be named as non-benign, and `user.email` must still
+    stay off that naming, exactly as it did as a discard before this task."""
     wt = worktree_env["wt"]
     common_dir = worktree_env["common_dir"]
     cfg = common_dir / "config"
@@ -780,11 +834,13 @@ def test_reviewer_identity_plus_an_exec_surface_key_still_discards(worktree_env)
     _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    assert not delta.is_empty(), (
-        "user.email alongside a non-benign alias key was excused: "
-        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
-    assert any("/config" in p for p in delta.modified), (
-        f"the mixed config change was not caught: modified={delta.modified}")
+    assert delta.is_empty(), (
+        "user.email alongside a non-benign alias key (no tracked edit) "
+        "discarded the verdict instead of routing to the environment "
+        f"disclosure: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}")
+    assert any("/config" in p for p in delta.environment), (
+        f"the mixed config change was not disclosed: environment={delta.environment}")
     assert not any(p.endswith("/config") for p in delta.benign), (
         f"a non-allowlisted config change landed in benign: benign={delta.benign}")
     assert delta.nonbenign_keys == ["alias.pwn"], delta.nonbenign_keys
@@ -808,25 +864,45 @@ def test_no_exec_surface_key_entered_the_benign_allowlist():
             f"{key!r} must not be treated as a benign config key")
 
 
-def test_the_named_non_benign_key_reaches_the_persisted_checklist_evidence(
+def test_an_unattributed_environment_key_does_not_leak_into_discard_evidence(
     worktree_env,
 ):
-    """End-to-end: the key named in `compare()`'s discard text must survive
-    into the persisted `ReviewDecision.checklist` evidence the next attempt
-    and an operator actually read — naming it in `compare()` alone is not
-    enough if the wiring to the verdict drops it."""
+    """End-to-end companion to the compare()-level naming tests above.
+
+    A non-benign config key change with no worktree write of its own no
+    longer reaches `_integrity_failure_decision` at all in production (see
+    `_run_reviewer`'s `delta.is_empty()` gate, satisfied by `Delta.environment`
+    being excluded from `is_empty()`) — it is accepted and disclosed through
+    `reviewer_worktree_environment_change` instead, never through the
+    checklist evidence. A genuine discard (a planted hook, here) happening
+    ALONGSIDE that config change must still discard the verdict, and the
+    persisted checklist evidence must name the hook — the actually
+    attributable write — and must NOT also name the unattributed config key,
+    which was disclosed separately and does not belong in a discard whose
+    writer this module cannot establish.
+    """
     wt = worktree_env["wt"]
+    admin = worktree_env["admin_dir"]
     common_dir = worktree_env["common_dir"]
     cfg = common_dir / "config"
 
     before = rw.snapshot(wt, timeout=_TIMEOUT)
-    _git(wt, "config", "--file", str(cfg), "branch.x.rebase", "true")
     _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
+    hook = admin / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\ntrue\n")
+    hook.chmod(0o755)
+
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert "alias.pwn" in delta.environment_keys, delta.environment_keys
 
     decision = _integrity_failure_decision(delta)
     assert decision.passed is False
-    assert "alias.pwn" in decision.checklist[0].evidence, decision.checklist[0].evidence
+    assert "post-checkout" in decision.checklist[0].evidence, (
+        decision.checklist[0].evidence)
+    assert "alias.pwn" not in decision.checklist[0].evidence, (
+        "an unattributed environment key leaked into the discard evidence: "
+        f"{decision.checklist[0].evidence}")
 
 
 # --------------------------------------------------------------------------- #

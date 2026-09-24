@@ -1512,7 +1512,14 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25039 -> 25094 (+55, `len(Path(...).read_text().splitlines())` metric —
+    # `wc -l` reads 25091): task reviewer-worktree-shared-config-attribution
+    # — the `reviewer_worktree_environment_change` emit block in
+    # `_run_reviewer` (a shared `.git` config key-set change is disclosed,
+    # not charged to the reviewer) and the `_integrity_failure_detail`
+    # authorship-attribution fix (a `.git`-only delta no longer claims "the
+    # reviewer wrote" it). Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25125,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
