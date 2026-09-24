@@ -677,6 +677,113 @@ def test_is_python_profile_routing():
 
 
 # --------------------------------------------------------------------------- #
+# 428: a non-Python manifest entry (JS/TS/extensionless) must never reach     #
+# pytest on the Python-profile-or-no-profile path — pytest's own "no tests   #
+# ran" for such an entry is not an honest diagnosis of what actually went    #
+# wrong, and the gate must name the extension + the missing per-file runner  #
+# instead. The non-Python-*profile* route (test_cmd) is untouched.           #
+# --------------------------------------------------------------------------- #
+
+
+def test_js_entry_in_python_repo_never_reaches_pytest(repo, monkeypatch):
+    """On main this fails: pytest IS invoked with lib.test.js (and the
+    verdict ends up 'error' via pytest's own "no tests ran" reading, not
+    via an honest refusal). The guard must intercept before any invocation."""
+    (repo / "lib.test.js").write_text("// not python\n")
+    (repo / MANIFEST).write_text(json.dumps({"tests": ["lib.test.js"]}))
+
+    def _boom(*a, **k):
+        raise AssertionError("pytest was invoked")
+    monkeypatch.setattr(repro_gate, "_run_pytest_proc", _boom)
+    monkeypatch.setattr(repro_gate, "_run_pytest", _boom)
+
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "error", r.reasons
+
+
+def test_non_python_entry_verdict_names_extension_and_runner_gap(repo):
+    (repo / "lib.test.js").write_text("// not python\n")
+    (repo / MANIFEST).write_text(json.dumps({"tests": ["lib.test.js"]}))
+
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "error", r.reasons
+    reason = r.reasons[0]
+    assert ".js" in reason
+    assert "lib.test.js" in reason
+    assert "no per-file runner is configured" in reason
+    assert "no tests ran" not in reason.lower()
+    assert "exit 5" not in reason
+    # The orchestrator truncates to reasons[0][:200] (repro_gate event) — the
+    # diagnosis must survive that cut.
+    assert ".js" in reason[:200]
+    assert "no per-file runner is configured" in reason[:200]
+
+
+def test_each_non_python_extension_is_named(repo):
+    for name in ("a.test.js", "b.test.ts", "Makefile"):
+        (repo / name).write_text("stub\n")
+    (repo / MANIFEST).write_text(
+        json.dumps({"tests": ["a.test.js", "b.test.ts", "Makefile"]})
+    )
+
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "error", r.reasons
+    reason = r.reasons[0]
+    assert ".js" in reason
+    assert ".ts" in reason
+    assert "(no extension)" in reason
+
+
+def test_python_only_manifest_unaffected_by_the_guard(repo):
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "pass", r.reasons
+
+
+def test_non_python_entries_classification():
+    assert repro_gate._non_python_entries(["t.py::c"]) == []
+    assert repro_gate._non_python_entries(["t.PY"]) == []
+    assert repro_gate._non_python_entries(["a.js", "a.js::x"]) == [("a.js", ".js")]
+    assert repro_gate._non_python_entries(["bin/run"]) == [("bin/run", "(no extension)")]
+
+
+def test_js_profile_repo_is_untouched_by_the_python_guard(js_repo):
+    """The guard is on the pytest path only — a real non-Python profile
+    (test_cmd route) must behave exactly as before the fix."""
+    profile = _node_profile(js_repo, f"{sys.executable} run_tests.py")
+    r = run_repro_gate(js_repo, "HEAD", profile)
+    assert r.verdict == "pass", r.reasons
+
+
+def test_mixed_python_and_js_manifest_is_one_error_not_a_partial_pass(repo):
+    """A manifest with a genuinely-satisfying .py entry AND a non-Python
+    entry must not become 'pass' because the offender was set aside — it
+    stays 'error', same as it does today (never a silent partial pass), and
+    nothing is dropped from the recorded tests."""
+    (repo / "lib.test.js").write_text("// not python\n")
+    (repo / MANIFEST).write_text(json.dumps({
+        "tests": ["test_repro.py::test_add_fixed", "lib.test.js"]
+    }))
+
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "error", r.reasons
+    assert r.tests == ["test_repro.py::test_add_fixed", "lib.test.js"]
+    reason = r.reasons[0]
+    assert "lib.test.js" in reason
+    assert "test_repro.py" not in reason
+
+
+def test_deleted_non_python_declared_file_is_still_a_fail(repo):
+    """Ordering pin: the pre-existing missing-declared-file check runs
+    BEFORE the new non-Python guard, so a deleted file still reads as the
+    stronger 'fail', not the guard's advisory 'error'."""
+    (repo / MANIFEST).write_text(json.dumps({"tests": ["lib.test.js"]}))
+
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "fail", r.reasons
+    assert "declared test file(s) missing" in r.reasons[0]
+
+
+# --------------------------------------------------------------------------- #
 # resume-shape: a resumed attempt's `base_ref` is the task's TRUE pre-work    #
 # base (the caller — Orchestrator._repro_base_ref — is responsible for that), #
 # but the checkpoint it branched from already contains a prior attempt's fix. #

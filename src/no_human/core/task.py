@@ -47,6 +47,40 @@ def commit_subject(title: str, external_id: str | None, prefix: str = "") -> str
     return f"{prefix}{ext}{title}"
 
 
+#: Conventional Commits v1.0.0 subject line: `<type>[optional scope][!]: <description>`
+_CONVENTIONAL_TYPE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9]*$")
+_CONVENTIONAL_SCOPE_RE = re.compile(r"^\([^()\r\n]+\)$")
+
+
+def conventional_subject_error(subject: str) -> str | None:
+    """``None`` when *subject* conforms to Conventional Commits v1.0.0; else a
+    short, actionable reason it does not.
+
+    Only the first line of *subject* is checked (a commit subject is the
+    first line of a commit message). Implements the published spec as-is:
+    ``<type>[(<scope>)][!]: <description>`` — no project-specific type
+    allow-list, scope requirement, or breaking-change rule.
+    """
+    first_line = subject.splitlines()[0] if subject else ""
+    if ": " not in first_line:
+        return "missing the ': ' separator after a type"
+    head, _, description = first_line.partition(": ")
+    if not description.strip():
+        return "empty description after ':'"
+    if head.endswith("!"):
+        head = head[:-1]
+    type_part = head
+    scope_start = head.find("(")
+    if scope_start != -1:
+        type_part = head[:scope_start]
+        scope = head[scope_start:]
+        if not _CONVENTIONAL_SCOPE_RE.match(scope):
+            return "malformed scope"
+    if not _CONVENTIONAL_TYPE_RE.match(type_part):
+        return "type must be a single word with no whitespace"
+    return None
+
+
 def priority_rank(value: Any) -> int:
     """Sort key for dispatch ordering; never raises — fails soft to medium's rank.
 
