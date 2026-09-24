@@ -5450,6 +5450,17 @@ async def _approve_go_landed(config, task_id, landed_sha, justification, base_br
             f"{prior_note} on human assertion that content landed at "
             f"{landed_sha[:12]}{branch_note}. residue: {residue_text}"
         )
+        if t.repo_path:
+            try:
+                from ..vcs.changelog_gap import commit_needs_changelog
+                if commit_needs_changelog(Path(t.repo_path), landed_sha):
+                    console.print(
+                        f"[yellow]note:[/] {landed_sha[:12]} changes a user-visible "
+                        f"surface and touches no CHANGELOG.md. "
+                        f"Run `nh changelog-check` before the next release cut."
+                    )
+            except Exception:
+                pass  # never blocks a landing (see the task's SCOPE)
 
 
 async def _approve_go_single(config, task_id, land_one, force_superseded=False):
@@ -6027,6 +6038,39 @@ def diff(task_id):
                 console.print(f"[red]git error:[/] {exc}")
 
     asyncio.run(_go())
+
+
+@cli.command("changelog-check")
+@click.argument("commit_range", required=False)
+@click.option("--repo", default=".", help="Git checkout to check (default: cwd).")
+def changelog_check(commit_range, repo):
+    """Commits that change a user-visible surface and touch no CHANGELOG.md.
+
+    Defaults to the range since the newest tag (or the whole history if
+    there are no tags). This does NOT decide whether a CHANGELOG bullet
+    covers a commit — that judgement call is for whoever writes the release
+    notes. It only surfaces the commits they should be looking at.
+    """
+    from ..vcs.changelog_gap import ChangelogCheckError, missing_changelog_commits
+    try:
+        gaps, description = missing_changelog_commits(Path(repo), commit_range)
+    except ChangelogCheckError as exc:
+        console.print(f"[bold red]error:[/] {exc}")
+        sys.exit(2)
+    if not gaps:
+        console.print(
+            f"no commit {description} changes a user-visible surface "
+            f"without a CHANGELOG.md entry"
+        )
+        sys.exit(0)
+    console.print(f"commits {description} missing a CHANGELOG.md touch:")
+    for gap in gaps:
+        console.print(f"  {gap.sha[:12]}  {gap.subject}")
+    console.print(
+        "[dim]these are inputs for whoever writes the release notes, not "
+        "proof any of them lacks a covering bullet.[/]"
+    )
+    sys.exit(1)
 
 
 @cli.command("review")

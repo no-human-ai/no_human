@@ -1732,7 +1732,14 @@ FROZEN_FILE_LINES = {
     # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
     # mergeability as its own not-landable category (summary line and the
     # --yes skip message) instead of counting it as landable.
-    "cli/commands.py": 9267,
+    # 9267 -> 9311 (+44): merged with the changelog-gap task, which
+    # independently added the new `nh changelog-check` command (walks a
+    # commit range for user-visible-surface commits that never touch
+    # CHANGELOG.md, exits non-zero when any are found) plus a non-blocking
+    # warning in `_approve_go_landed` that names it when the just-landed
+    # commit is one of those. Measured via `wc -l src/no_human/cli/commands.py`
+    # (agrees: 9311).
+    "cli/commands.py": 9311,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
