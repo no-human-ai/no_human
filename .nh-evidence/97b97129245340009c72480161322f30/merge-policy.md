@@ -1,12 +1,12 @@
 # Merge-ready policy
 
-_Harness-captured record for task `97b97129`, commit `ba97158c7aef0e0706443f81db54c2daa28026c3` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `97b97129`, commit `d21175b90504774c1a848473e257cfa7a370d160` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
   "policy_changed_in_diff": false,
   "problems": [],
-  "ready": false,
+  "ready": true,
   "rules": [
     {
       "detail": "review PASSED on head",
@@ -14,9 +14,9 @@ _Harness-captured record for task `97b97129`, commit `ba97158c7aef0e0706443f81db
       "passed": true
     },
     {
-      "detail": "tests: 2 failed of 13466 run",
+      "detail": "tests: 0 failed of 13743 run",
       "name": "tests_ran_and_passed",
-      "passed": false
+      "passed": true
     },
     {
       "detail": "tamper guard did not fire",
@@ -24,9 +24,9 @@ _Harness-captured record for task `97b97129`, commit `ba97158c7aef0e0706443f81db
       "passed": true
     },
     {
-      "detail": "repro gate error",
+      "detail": "repro gate pass",
       "name": "repro_gate",
-      "passed": false
+      "passed": true
     },
     {
       "detail": "1 verifiers, none failed",
@@ -34,12 +34,12 @@ _Harness-captured record for task `97b97129`, commit `ba97158c7aef0e0706443f81db
       "passed": true
     },
     {
-      "detail": "ci: none reported (tolerated)",
+      "detail": "ci: success",
       "name": "ci",
       "passed": true
     }
   ],
   "source": "default",
-  "summary": "not ready \u2014 2 of 6 rules failed: tests_ran_and_passed, repro_gate"
+  "summary": "ready \u2014 6 of 6 rules satisfied"
 }
 ```

@@ -1,31 +1,56 @@
 # How I verified this — full log
 
-_Harness-captured record for task `97b97129`, commit `ba97158c7aef0e0706443f81db54c2daa28026c3` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `97b97129`, commit `d21175b90504774c1a848473e257cfa7a370d160` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
+- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_check_release_manifest.py -n 4 2>&1 | tail -60`
 
 ```
-..................                                                       [100%]
-18 passed in 2.58s
-```
+f"{doc} cites `{raw}` (resolved against {resolve_path!r}) but that "
+                f"resolves to {len(hits)} files, not one"
+            )
+            display_path = hits[0]
+            text = hits[0].read_text(encoding="utf-8")
+    
+        vicinity = _symbol_vicinity(text, symbol)
+        assert vicinity is not None, (
+            f"{doc} cites `{raw}` but {symbol!r} is not defined in {display_path} "
+            f"— renamed or deleted, and the doc still sends readers to it"
+        )
+        haystack = "\n".join(vicinity)
+        assert token in haystack, (
+            f"{doc} cites `{raw}` for {token!r}, but {symbol}'s body now reads:\n"
+            f" 
+[... 2,891 of 4,030 characters omitted from the middle ...]
+val.md:src/<redacted>/cli/commands.py:bench_run:8358]
+FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[WINDOWS.md:cli/commands.py:_try_kill:7740]
+FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[eval.md::bench_run:8509]
+FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[eval.md::bench_run:8387]
+5 failed, 233 passed, 19 skipped in 10.57s
+```  
+  _excerpt - 4,024 characters of output in total_
 
-- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py tests/test_structural_budget.py -n 4 2>&1 | tail -40`
+- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_check_release_manifest.py -n 4 2>&1 | tail -30`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-...........................................                              [100%]
-43 passed in 5.25s
+................................s.s.s.s.s.s.s........................... [ 28%]
+............................s.s.s.....................s...............s. [ 56%]
+........................................................................ [ 84%]
+......ss.ssss..s.........................                                [100%]
+238 passed, 19 skipped in 6.53s
 ```
 
-- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py \     tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_cli_commands.py \     tests/test_landed_override.py tests/test_approve.py tests/test_approve_ready_cli.py \     tests/test_readme_claims.py tests/test_structural_budget.py -n 4 2>&1 | tail -40`
+- `uv run pytest -q tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_cli_commands.py tests/test_landed_override.py tests/test_approve.py tests/test_approve_ready_cli.py tests/test_blocker_challenge.py tests/test_ci_action.py tests/test_classify.py tests/test_review_memory.py tests/test_reviewer_recall_gate.py -n 4 2>&1 | tail -40`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
@@ -33,36 +58,73 @@ bringing up nodes...
 ........................................................................ [ 24%]
 ........................................................................ [ 37%]
 ........................................................................ [ 49%]
-..................................................................s.s.s. [ 62%]
-s.s.s.s.s.s.s....................................................s...... [ 74%]
-.......................s................................................ [ 87%]
+........................................................................ [ 61%]
+........................................................................ [ 74%]
+........................................................................ [ 86%]
 ........................................................................ [ 99%]
-.                                                                        [100%]
-565 passed, 12 skipped in 30.15s
+.....                                                                    [100%]
+581 passed in 86.79s (0:01:26)
 ```
 
-- `uv run pytest -q -n 4 tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py tests/test_structural_budget.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_cli_commands.py tests/test_landed_override.py tests/test_approve.py tests/test_approve_ready_cli.py tests/test_readme_claims.py 2>&1 | tail -20`
+- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py \     tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_cli_commands.py \     tests/test_ [... 58 of 401 characters omitted from the middle ...] e_ready_cli.py \     tests/test_readme_claims.py tests/test_structural_budget.py tests/test_check_release_manifest.py -n 4 2>&1 | tail -20`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 12%]
-........................................................................ [ 24%]
-........................................................................ [ 37%]
-........................................................................ [ 49%]
-........................................................................ [ 62%]
-.............s.s.s.s.s.s.s.s.s.s........................................ [ 74%]
-.........s....................................s......................... [ 87%]
-........................................................................ [ 99%]
-.                                                                        [100%]
-565 passed, 12 skipped in 37.97s
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 47%]
+......................................................................s. [ 58%]
+s.s.s.s.s.s.s.s.s.................................................s..... [ 70%]
+....................s................................................... [ 82%]
+.........................................ss..ssss..s.................... [ 94%]
+...................................                                      [100%]
+592 passed, 19 skipped in 26.07s
+```
+
+- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..........................................................s.s.s.s.s.s.s. [ 34%]
+s.s.s...............................................s................... [ 68%]
+..........s.......................................................       [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/97b97129245340009c72480161322f30.8407.43dc3829/src/<redacted>/testing/test_layers.p
+[... 156 of 1,295 characters omitted from the middle ...]
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/97b97129245340009c72480161322f30.8407.43dc3829/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+198 passed, 13 skipped, 13759 deselected, 2 warnings in 18.00s
+```  
+  _excerpt - 1,281 characters of output in total_
+
+- `uv run pytest -q tests/test_changelog_gap.py tests/test_approve_landed_changelog_warning.py \     tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_cli_commands.py \     tests/test_ [... 58 of 401 characters omitted from the middle ...] e_ready_cli.py \     tests/test_readme_claims.py tests/test_structural_budget.py tests/test_check_release_manifest.py -n 4 2>&1 | tail -10`
+
+```
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 47%]
+.................................................s.s.s.s.s.s.s.s.s.s.... [ 58%]
+........................................................................ [ 70%]
+.............s...s...................................................... [ 82%]
+.......................................................................s [ 94%]
+ssss.s.s...........................                                      [100%]
+592 passed, 19 skipped in 30.81s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
