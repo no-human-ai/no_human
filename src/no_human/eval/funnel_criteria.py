@@ -69,7 +69,12 @@ class FunnelVerdict:
 
 def _cost(record: dict[str, Any]) -> int:
     """Weighted spend for *record*, from the total if the runner wrote one and
-    from the token classes otherwise."""
+    from the token classes otherwise.
+
+    The runner (``funnel_eval._price``) always writes ``weighted_tokens``,
+    output premium included, so the token-class fallback below is the rare
+    path: a record built by hand (a test, an older report on disk) that never
+    went through the runner at all."""
     total = record.get("weighted_tokens")
     if total is not None:
         return int(total)
