@@ -334,19 +334,94 @@ _PROSE_RULES: list[tuple[TaskKind, re.Pattern[str], str]] = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# Position-aware masking: a quoted/reproduced symptom is not a statement of   #
+# intent (defect: issue #428, "no tests ran" quoted from a pytest failure    #
+# message got read as a test_gap signal).                                    #
+# --------------------------------------------------------------------------- #
+#
+# Issues about testing infrastructure quote test-runner output; issues about
+# missing coverage say "no tests" in their own voice. The two are hard to
+# tell apart by keyword and trivial to tell apart by position: one sits
+# inside a quotation, a code span, or a fenced block — text the author is
+# reproducing, not asserting — the other is the author's own prose. This
+# masker blanks the former (replacing every character with a space, except
+# newlines, so offsets never shift and nothing downstream needs to change)
+# before the kind rules ever see the text.
+#
+# Deliberately NOT masked (rare enough in issue prose that guessing wrong
+# costs more than leaving them alone): 4-space indented code blocks (too
+# easily confused with an ordinary list continuation), HTML blocks, and
+# unterminated inline delimiters (a lone stray backtick masks nothing).
+_FENCE_BLOCK = re.compile(
+    r"^( {0,3})(`{3,}|~{3,})[^\n]*\n"   # opening fence line
+    r"(?:.*\n)*?"                        # body, as few lines as possible…
+    r"(?:\1\2[`~]*[ \t]*(?:\n|\Z)|\Z)",  # …until a matching closer, or EOF
+    re.M)
+_BLOCKQUOTE_LINE = re.compile(r"^ {0,3}>.*$", re.M)
+# No re.S: an inline code span must not cross a newline. Without this, a
+# single stray (unterminated) backtick anywhere in the body pairs with the
+# NEXT real backtick — possibly lines later — and blanks everything between
+# them, including real prose. Confining `.` to one line means an unterminated
+# backtick simply fails to match anything, which is the documented intent
+# below ("a lone stray backtick masks nothing").
+_INLINE_CODE_SPAN = re.compile(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+# Pairing rule: straight double quotes get the SAME word-boundary guard as
+# _SINGLE_QUOTED below, for the same reason — a stray straight quote used as
+# an inch/foot mark (24", 30') or a prime symbol sits directly against a
+# digit, so a quote adjacent to alnum text can never be the start/end of a
+# real quotation. Curly quotes (“ ”) are directional and unambiguous already
+# — “ can only open and ” can only close — so they need no such guard.
+_DOUBLE_QUOTED = re.compile(
+    r'(?<![A-Za-z0-9])"[^"\n]{1,200}"(?![A-Za-z0-9])'
+    r"|“[^”\n]{1,200}”")
+# Word-boundary-guarded so real prose survives an apostrophe: without the
+# guards, "pytest's runner has no tests ... instead of pytest'" would mask
+# everything between the two apostrophes as one giant "quoted string".
+_SINGLE_QUOTED = re.compile(r"(?<![A-Za-z0-9])'[^'\n]{1,200}'(?![A-Za-z0-9])")
+
+
+def _blank(m: "re.Match[str]") -> str:
+    """Replace every character of a match with a space, keeping ``\\n`` —
+    preserves character offsets so nothing downstream has to shift."""
+    return "".join(ch if ch == "\n" else " " for ch in m.group(0))
+
+
+def mask_quoted_spans(text: str) -> str:
+    """Blank out (space-fill, offsets preserved) fenced code blocks,
+    blockquote lines, inline code spans, and quoted strings — constructs
+    that *reproduce* text rather than assert it. Each pass runs on the
+    already-masked string, most structural first, so a signal word that only
+    ever appears inside one of these constructs cannot fire a kind rule,
+    while the same word in the author's own prose still can."""
+    masked = _FENCE_BLOCK.sub(_blank, text)
+    masked = _BLOCKQUOTE_LINE.sub(_blank, masked)
+    masked = _INLINE_CODE_SPAN.sub(_blank, masked)
+    masked = _DOUBLE_QUOTED.sub(_blank, masked)
+    masked = _SINGLE_QUOTED.sub(_blank, masked)
+    return masked
+
+
 def _intent_text(task: Any) -> str:
-    """What the author asked for: title and the structured, authored fields."""
+    """What the author asked for: title and the structured, authored fields.
+
+    Each field is masked (see :func:`mask_quoted_spans`) *before* being
+    joined into the others, so an unterminated fence opener in one
+    acceptance criterion cannot swallow the next criterion too.
+    """
     parts = [
-        getattr(task, "title", "") or "",
-        " ".join(getattr(task, "acceptance_criteria", []) or []),
-        " ".join(getattr(task, "requirements", []) or []),
+        mask_quoted_spans(getattr(task, "title", "") or ""),
+        " ".join(
+            mask_quoted_spans(c) for c in (getattr(task, "acceptance_criteria", []) or [])),
+        " ".join(
+            mask_quoted_spans(r) for r in (getattr(task, "requirements", []) or [])),
     ]
     return "\n".join(parts)
 
 
 def _prose_text(task: Any) -> str:
     """Free-form discussion: background, prior art, worked examples."""
-    return getattr(task, "description", "") or ""
+    return mask_quoted_spans(getattr(task, "description", "") or "")
 
 
 def _guard_code_review(task: Any, verdict: KindVerdict) -> KindVerdict:

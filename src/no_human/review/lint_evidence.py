@@ -83,10 +83,13 @@ _NEW_PATH_RE = re.compile(r"^\+\+\+ (.*)$")
 DIFF_TIMEOUT = 20
 
 
-def _unquote_git_path(path: str) -> str:
+def unquote_git_path(path: str) -> str:
     """git wraps a path in double quotes and C-escapes it when it contains
     non-ASCII, backslashes or control characters (`"b/caf\\303\\251.py"`).
-    Plain paths — including ones with spaces — are emitted verbatim."""
+    Plain paths — including ones with spaces — are emitted verbatim.
+
+    Public because `diff_coverage._unquote_path` is a second consumer: any
+    patch-header path there is quoted under the same rules."""
     if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
         try:
             return (
@@ -125,7 +128,7 @@ def parse_changed_lines(diff_text: str) -> dict[str, set[int]]:
             m = _NEW_PATH_RE.match(line)
             # The quoting wraps the WHOLE header token including git's `b/`
             # prefix (`+++ "b/caf\303\251.py"`), so unquote before stripping it.
-            raw = _unquote_git_path((m.group(1) if m else "").rstrip("\t"))
+            raw = unquote_git_path((m.group(1) if m else "").rstrip("\t"))
             if not raw or raw == "/dev/null":
                 current = None
                 continue
