@@ -5446,7 +5446,16 @@ async def onboarding_status(request: Request) -> dict[str, Any]:
     # is polled repeatedly by the wizard and its plain `fetch` body is what
     # PostHog session replay would otherwise capture unmasked. See
     # `_onboarding_public` — the one function every echoing route must use.
-    return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
+    return {
+        "completed": bool(ob.get("completed")),
+        # Derived, never the value: the wizard remounts with an empty email
+        # field after a reload and can never learn the address back
+        # (`_ONBOARDING_STATUS_REDACTED_FIELDS`), so this reports only its
+        # EXISTENCE. A boolean carries no PII, so the route-walk leak test
+        # stays green.
+        "email_registered": isinstance(ob.get("email"), str) and bool(ob["email"].strip()),
+        **_onboarding_public(ob),
+    }
 
 
 #: RFC 5321 limits: the whole path, and the local part before the "@".

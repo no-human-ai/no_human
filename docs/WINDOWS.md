@@ -350,7 +350,7 @@ accurate in a stronger sense than intended.
 | --- | --- |
 | `test_kill_process_tree_uses_taskkill_on_windows` | Monkeypatched `os.killpg` as a TRIPWIRE, but `os.killpg` does not exist on Windows and `monkeypatch.setattr` refuses a missing attribute — so **the one test proving the Windows branch reaches `taskkill` was the one test that errored on Windows**, during setup, before its body ran. Fixed with `raising=False`; the tripwire stays armed |
 | `test_kill_process_tree_still_killpgs_on_posix` | Same, for `os.getpgid`/`os.killpg`, plus `signal.SIGKILL` |
-| `test_try_kill_still_signals_on_posix` | `signal.SIGKILL` missing on Windows → `AttributeError` at `cli/commands.py:_try_kill:7644` — the exact shape the neighbouring `test_stop_path_never_names_sigkill_at_module_scope` exists to fence |
+| `test_try_kill_still_signals_on_posix` | `signal.SIGKILL` missing on Windows → `AttributeError` at `cli/commands.py:_try_kill:7703` — the exact shape the neighbouring `test_stop_path_never_names_sigkill_at_module_scope` exists to fence |
 | `test_atomic_write_0600_posix_does_not_shell_out` ×2 (both suites) | Named `_posix` but never pinned `_IS_WINDOWS = False`, so on a Windows host it took the WINDOWS branch, called `_run_icacls`, and **tripped its own tripwire**. It asserted a POSIX property while letting the host decide the branch |
 | `test_wheel_installed_in_a_clean_venv_serves_the_board` | The `Scripts`/`bin` split was handled, but the interpreter on disk is `python.exe` and `uv pip install --python <path>` does a FILE-EXISTENCE check, so the extensionless path failed with *"No virtual environment or system Python installation found"*. Spawning would have masked it; an explicit path argument does not. **[fix unverified]** — this test builds a wheel and a clean venv and was too long to re-run here |
 
@@ -674,6 +674,14 @@ silently (`/S`). So SmartScreen behaviour on a genuinely downloaded copy is
 **[unverified]** here and is stated as an expectation, not as an observation.
 It should be confirmed once a real download path exists. Code signing plus
 reputation is what removes it; that is a separate piece of work.
+
+Producing this installer at all depends on `electron-builder` fetching NSIS
+and 7zip binaries from a third-party CDN at build time — the same download
+path that made the `v0.2.3` Windows release fail with a mid-build 504
+before a single artefact was produced. That dependency, what's measured
+about how often it fails, and the caching mitigation now in CI are covered
+in `docs/DISTRIBUTION.md`, §6 ("Build-time third-party downloads") — see
+that section rather than duplicating it here.
 
 ### 5.6 What was NOT verified
 

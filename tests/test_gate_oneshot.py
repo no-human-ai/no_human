@@ -25,8 +25,9 @@ import pytest
 from click.testing import CliRunner
 
 from no_human.cli.commands import gate
+from no_human.core.task import Task
 from no_human.review import oneshot
-from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, run_gate
+from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, review_diff, run_gate
 from no_human.review.reviewer import ReviewDecision, ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem
 from no_human.config import AuthError, MissingCredentialError
@@ -178,6 +179,48 @@ def test_the_gate_renders_file_and_line_citations(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # 2. exactly one one-shot construction site                                   #
 # --------------------------------------------------------------------------- #
+
+async def test_review_diff_passes_the_callers_diff_and_refs_through_single_turn(monkeypatch):
+    """`review_diff` is the seam the GitHub Action calls instead of building a
+    reviewer itself. What it forwards IS its contract, so record the call: the
+    caller's diff must arrive as `diff_override` (a falsy one would make the
+    reviewer recompute over every changed file and ignore the caller's cap),
+    the caller's refs must arrive unchanged, the review must be single-turn,
+    and `reviewed_sha` must be the head the caller named. Without this, every
+    one of those can be dropped and the suite stays green."""
+    seen = {}
+
+    class _Recording:
+        def __init__(self, *, model=None, **kw):
+            seen["model"] = model
+
+        async def review(self, task, **kwargs):
+            seen.update(kwargs)
+            seen["task"] = task
+            return ReviewDecision(passed=True, checklist=[])
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Recording)
+    task = Task.new(title="t", description="d", repo_path="/tmp/x", kind="feature")
+
+    decision = await review_diff(
+        task,
+        repo_path=Path("/tmp/x"),
+        diff="diff --git a/a b/a\n+line\n",
+        before_ref="base123",
+        after_ref="head456",
+        model="claude-opus-4-8",
+    )
+
+    assert decision.passed is True
+    assert seen["model"] == "claude-opus-4-8"
+    assert seen["diff_override"] == "diff --git a/a b/a\n+line\n"
+    assert seen["before_ref"] == "base123"
+    assert seen["after_ref"] == "head456"
+    assert seen["reviewed_sha"] == "head456"
+    assert seen["single_turn"] is True
+    assert seen["repo_path"] == Path("/tmp/x")
+    assert seen["task"] is task
+
 
 def test_only_one_module_constructs_the_oneshot_reviewer_call():
     """`diff_override=` marks the one-shot construction site this module
@@ -941,13 +984,14 @@ def test_run_gate_actually_discovers_real_uncommitted_files(tmp_path, monkeypatc
 def test_a_diff_over_the_review_cap_refuses_before_constructing_the_reviewer(
     tmp_path, monkeypatch,
 ):
-    """`AdversarialReviewer.review` silently truncates `diff_override` past
-    `_DIFF_CAP` chars with no signal back to the caller (reviewer.py:2537) —
-    so without this guard, a diff bigger than the cap would get a fraction
-    of itself reviewed and could still come back as a bare PASS. The gate
-    must refuse by name (exit 2, `GateUnavailable`) BEFORE constructing (and
-    billing) a reviewer at all — never construct one, run it on a truncated
-    prefix, and only then report FAIL with an empty checklist."""
+    """`AdversarialReviewer.review`'s `diff_override` path now discloses cut
+    files to the reviewer instead of silently truncating, but the gate's own
+    policy is stricter than disclosure: a verdict on a partial diff is still
+    a verdict on a partial diff. The gate must refuse by name (exit 2,
+    `GateUnavailable`) BEFORE constructing (and billing) a reviewer at all —
+    never construct one, run it on a truncated prefix, and only then report
+    FAIL with an empty checklist — and the refusal must name which changed
+    file(s) would have lost patch content."""
     repo, _bare = _make_repo_with_origin(tmp_path)
     _git(repo, "checkout", "-b", "feature")
     # One line per byte-ish, comfortably over `_DIFF_CAP` (60_000 chars).
@@ -971,11 +1015,14 @@ def test_a_diff_over_the_review_cap_refuses_before_constructing_the_reviewer(
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _NeverConstructed)
 
     import asyncio
-    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters"):
+    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters") as excinfo:
         asyncio.run(run_gate(repo))
     assert not constructed, (
         "the reviewer must never be constructed or invoked once the diff "
         "exceeds the single-turn review cap"
+    )
+    assert "big.txt" in str(excinfo.value), (
+        "the refusal must name the oversized file, not just its size"
     )
 
 
@@ -1250,10 +1297,16 @@ def test_gate_runs_from_a_subdirectory_of_the_repo(tmp_path, monkeypatch):
 def test_check_credential_consults_the_reviewers_role_backend(tmp_path, monkeypatch):
     """Regression: `_check_credential` used to hardcode the claude-CLI/
     subscription check regardless of the actually-configured reviewer
-    backend (§6d). A reviewer pinned to `codex` must be checked via
-    `assert_task_backend_usable("codex", ...)`, never the claude-only path —
-    and must refuse (never silently pass as claude) when codex is
-    unavailable."""
+    backend (§6d). A reviewer pinned to `codex` must be routed through
+    `assert_task_backend_usable("codex", ...)`, never the claude-only path.
+
+    The codex path is made deterministically unusable from *inside* the
+    test — by patching the `oneshot.assert_task_backend_usable` seam with a
+    recording fake that raises — rather than relying on the host having no
+    OpenAI credential or no `codex` binary on PATH. The assertion then
+    proves the codex *routing* was actually taken (the fake was called with
+    `"codex"` and the reviewer's config data), not merely that some error
+    mentioning "codex" came back from wherever."""
     repo, _bare = _make_repo_with_origin(tmp_path)
 
     class _CodexConfig:
@@ -1272,9 +1325,25 @@ def test_check_credential_consults_the_reviewers_role_backend(tmp_path, monkeypa
     # codex-specific refusal below, proving the wrong check ran.
     monkeypatch.setattr(oneshot, "find_claude_cli", lambda: None)
 
+    calls = []
+
+    def _codex_unusable(name, config_data=None, *a, **kw):
+        calls.append((name, config_data))
+        raise BackendUnavailable("the `codex` CLI was not found (test double)")
+
+    monkeypatch.setattr(oneshot, "assert_task_backend_usable", _codex_unusable)
+
     import asyncio
-    with pytest.raises(GateUnavailable, match="codex") as exc_info:
+    with pytest.raises(GateUnavailable) as exc_info:
         asyncio.run(run_gate(repo))
+    # Proof the codex ROUTING was taken: the seam this test installed was
+    # actually invoked, with the codex backend name and the reviewer's
+    # config data — not merely that "codex" appears in the raised message.
+    assert calls == [("codex", _CodexConfig.data)]
+    assert "test double" in str(exc_info.value), (
+        "the refusal text must come from this test's own double, proving "
+        "the raise originates in the code under test, not the host machine"
+    )
     assert "claude CLI" not in str(exc_info.value), (
         "a codex-pinned reviewer must not be checked via the claude-only path"
     )

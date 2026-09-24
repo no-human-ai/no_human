@@ -96,8 +96,21 @@ def repo_root() -> Path:
 
 
 def tracked_files(root: Path) -> list[str]:
-    out = subprocess.check_output(["git", "ls-files", "-z"], cwd=root, text=True)
-    return sorted(p for p in out.split("\0") if p)
+    # Read as BYTES and decode explicitly. `text=True` would enable universal-
+    # newline decoding, which rewrites a CR inside a path to LF — undoing the
+    # whole point of `-z`, which was chosen so git hands over raw bytes rather
+    # than its C-quoted form. A tracked file named `na<CR>me.txt` was then
+    # looked up as `na<LF>me.txt` and the script died with FileNotFoundError.
+    #
+    # surrogateescape, not strict: git path bytes need not be valid UTF-8, and
+    # a strict decode would turn such a path into a crash. surrogateescape
+    # round-trips those bytes through `root / rel` (os.fsencode uses the same
+    # handler on POSIX), so `hash_path` still opens the real file; the same
+    # bytes come back out when the row is encoded with `errors="surrogateescape"`
+    # on write. On Windows, filenames are natively str, and neither CR nor
+    # non-UTF-8 names are creatable there — this path is POSIX in practice.
+    out = subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
+    return sorted(p for p in out.decode("utf-8", "surrogateescape").split("\0") if p)
 
 
 def hash_path(root: Path, rel: str) -> str:
@@ -108,11 +121,22 @@ def hash_path(root: Path, rel: str) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def _read_manifest_text(path: Path) -> str:
+    """Bytes in, explicit decode out — same reason as `tracked_files`."""
+    return path.read_bytes().decode("utf-8", "surrogateescape")
+
+
 def parse_manifest(text: str) -> dict[str, str]:
     """``{path: sha256}``. A row that cannot be parsed is an error, not a skip."""
     out: dict[str, str] = {}
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        s = line.rstrip("\n")
+    # Split on "\n" only. `splitlines()` also splits on a bare CR, which turns
+    # one row naming `na<CR>me.txt` into two rows that parse as neither.
+    # One trailing CR is still dropped, so a CRLF checkout (core.autocrlf) of
+    # an LF-written manifest keeps working; the single case that stays
+    # ambiguous is a path whose name ENDS in CR, and that is called out here
+    # rather than silently mis-parsed.
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        s = line[:-1] if line.endswith("\r") else line
         if not s.strip() or s.lstrip().startswith("#"):
             continue
         digest, sep, path = s.partition("  ")
@@ -215,10 +239,77 @@ def _previous_rows(manifest_path: Path) -> dict[str, str]:
     if not manifest_path.exists():
         return {}
     try:
-        return parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        return parse_manifest(_read_manifest_text(manifest_path))
     except (SystemExit, OSError, UnicodeDecodeError):
         return {}
 
+
+
+def _core_autocrlf(root: Path) -> str:
+    """Return the effective core.autocrlf value for diagnostics."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--get", "core.autocrlf"],
+            cwd=root, capture_output=True, text=True,
+        )
+    except OSError:
+        return "unknown"
+    if proc.returncode != 0:
+        return "unset"
+    return (proc.stdout or "").strip() or "unset"
+
+
+def _lf_normalized_hash(root: Path, rel: str) -> str | None:
+    """Hash a regular file after CRLF -> LF conversion, for diagnosis only."""
+    path = root / rel
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\r\n" not in data:
+        return None
+    normalized = data.replace(b"\r\n", b"\n")
+    if normalized == data:
+        return None
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def _line_ending_matches(
+    root: Path,
+    expected: dict[str, str],
+    candidates: list[str] | None = None,
+) -> list[str]:
+    """Paths whose raw bytes drift but whose CRLF-normalized bytes match."""
+    allowed = set(candidates) if candidates is not None else None
+    matches: list[str] = []
+    for rel, digest in expected.items():
+        if rel == MANIFEST_NAME:
+            continue
+        if allowed is not None and rel not in allowed:
+            continue
+        path = root / rel
+        if not (path.exists() or path.is_symlink()):
+            continue
+        try:
+            actual = hash_path(root, rel)
+        except OSError:
+            continue
+        if actual == digest:
+            continue
+        if _lf_normalized_hash(root, rel) == digest:
+            matches.append(rel)
+    return sorted(matches)
+
+
+def _line_ending_detail(root: Path, paths: list[str]) -> str:
+    shown = ", ".join(paths[:3])
+    suffix = f" +{len(paths) - 3} more" if len(paths) > 3 else ""
+    return (
+        f"{len(paths)} pinned file(s) differ only by CRLF/LF conversion "
+        f"({shown}{suffix}); core.autocrlf={_core_autocrlf(root)}"
+    )
 
 def _warn_if_nearly_every_row_changed(previous: dict[str, str],
                                       rows: dict[str, str]) -> None:
@@ -264,13 +355,41 @@ def write_manifest(root: Path) -> int:
                   f"    {APPROVE_CMD}", file=sys.stderr)
             return 2
 
+    line_ending_matches = _line_ending_matches(root, previous, tracked)
+    if line_ending_matches:
+        print(
+            f"--write: REFUSED — {_line_ending_detail(root, line_ending_matches)}. "
+            "Their LF-normalized bytes still match the reviewed manifest, so "
+            "regenerating now would replace reviewed LF hashes with checkout-"
+            "converted CRLF hashes.",
+            file=sys.stderr,
+        )
+        print(
+            "  Set 'git config core.autocrlf false', re-materialise the checkout "
+            "as LF, and re-run the check before regenerating. The existing "
+            "manifest was left byte-identical.",
+            file=sys.stderr,
+        )
+        return 2
+
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
-    # newline="\n" so the bytes are identical on every platform. Without it the
-    # write goes through the platform's text layer, which on Windows makes every
-    # row CRLF; the compare side reads back through the same layer and stays
-    # quiet, so the tool looks fine while git reports the whole file as changed.
-    manifest_path.write_text(HEADER + body, encoding="utf-8", newline="\n")
+    # Written as BYTES, which is the only way to be sure of them. Through the
+    # text layer the platform decides: on Windows every row becomes CRLF, the
+    # compare side reads back through the same layer and stays quiet, and the
+    # tool looks fine while git reports the whole file as changed.
+    #
+    # `write_text(..., newline="\n")` expressed the same intent and was correct
+    # on the interpreter this repo runs, but the `newline` keyword reached
+    # `Path.write_text` only in Python 3.10 — and this script is handed a bare
+    # `python3` by `vcs/derived_conflict.py::_inventory_argv`, which on macOS is
+    # /usr/bin/python3, still 3.9. It died there with a TypeError, and because
+    # that path is the derived-artefact conflict resolver, the crash surfaced as
+    # pull requests escalating to a human for a manifest a machine could have
+    # regenerated. `write_bytes` needs no version at all.
+    # surrogateescape here matches the decode handler `tracked_files` uses, so
+    # a non-UTF-8 path round-trips instead of raising UnicodeEncodeError.
+    manifest_path.write_bytes((HEADER + body).encode("utf-8", "surrogateescape"))
     _warn_if_nearly_every_row_changed(previous, rows)
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0
@@ -282,7 +401,7 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
         print(f"FAIL: {MANIFEST_NAME} not found at the repository root",
               file=sys.stderr)
         return 1
-    listed = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    listed = parse_manifest(_read_manifest_text(manifest_path))
     tracked = tracked_files(root)
     unpinnable = load_unpinnable(root)
 
@@ -295,6 +414,7 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
     # correctly-unpinned are counted, never reported as either.
     problems: list[str] = []
     unlisted: list[str] = []
+    line_ending_matches: list[str] = []
     if MANIFEST_NAME in listed:
         problems.append(f"{MANIFEST_NAME} lists itself; it cannot pin its own "
                         "content")
@@ -328,6 +448,8 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
             continue
         actual = hash_path(root, rel)
         if actual != listed[rel]:
+            if _lf_normalized_hash(root, rel) == listed[rel]:
+                line_ending_matches.append(rel)
             problems.append(
                 f"{rel}: content differs from the manifest "
                 f"(listed {listed[rel][:12]}…, actual {actual[:12]}…)")
@@ -348,23 +470,42 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
         for p in problems:
             print(f"  {p}", file=sys.stderr)
 
-    # One remedy, printed for either bucket, because both are answered by the
-    # same act: putting a row in the manifest. WHICH command does that is the
-    # thing this text exists to get right — in a classified tree `--write` is
-    # the damaging action, not the cure, so it is never recommended there.
+    if line_ending_matches:
+        print(
+            f"\n  LINE ENDINGS: {_line_ending_detail(root, line_ending_matches)}. "
+            "Their LF-normalized bytes match the reviewed pins exactly.",
+            file=sys.stderr,
+        )
+
+    # A classified tree must use the deliberate approval path. In an
+    # unclassified tree, a CRLF/LF-only mismatch must be repaired at checkout
+    # level BEFORE any manifest rewrite; otherwise --write would legitimize
+    # checkout-converted bytes as reviewed content.
     if problems or unlisted:
-        print("\n  REMEDY: " + (
-            f"pin each file deliberately — {APPROVE_CMD} — which is the one "
-            f"write path the export gate trusts. Do NOT run --write in this "
-            f"tree: it regenerates from the tree and {CLASSIFICATION_NAME} "
-            f"marks {len(unpinnable)} tracked path(s) that must never be pinned."
-            if unpinnable is not None else
-            f"regenerate with `python scripts/check_release_manifest.py "
-            f"--write`. That is safe here: this tree carries no "
-            f"{CLASSIFICATION_NAME}, so every tracked file ships and no "
-            f"private path can be pinned. In the source repo, which does carry "
-            f"one, use `scripts/export_guard.py approve` instead."),
-            file=sys.stderr)
+        if unpinnable is not None:
+            remedy = (
+                f"pin each file deliberately — {APPROVE_CMD} — which is the one "
+                f"write path the export gate trusts. Do NOT run --write in this "
+                f"tree: it regenerates from the tree and {CLASSIFICATION_NAME} "
+                f"marks {len(unpinnable)} tracked path(s) that must never be pinned."
+            )
+        elif line_ending_matches:
+            remedy = (
+                "restore an LF checkout before changing the manifest. Do NOT run "
+                "--write while the line-ending mismatch above is present: set "
+                "'git config core.autocrlf false', re-materialise the checkout, "
+                "and re-run this check. Address any remaining real content drift "
+                "only after the line-ending mismatch is gone."
+            )
+        else:
+            remedy = (
+                f"regenerate with `python scripts/check_release_manifest.py "
+                f"--write`. That is safe here: this tree carries no "
+                f"{CLASSIFICATION_NAME}, so every tracked file ships and no "
+                f"private path can be pinned. In the source repo, which does carry "
+                f"one, use `scripts/export_guard.py approve` instead."
+            )
+        print("\n  REMEDY: " + remedy, file=sys.stderr)
 
     if problems:
         return 1

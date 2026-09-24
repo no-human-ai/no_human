@@ -469,6 +469,146 @@ def test_write_produces_lf_bytes_on_every_platform(tmp_path):
     assert written.endswith(b"\n")
 
 
+CR_NAME = "na\rme.txt"   # a literal CR *inside* the name, not at its end
+
+needs_cr_filenames = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows forbids CR in a filename; this is the POSIX path that "
+           "`git ls-files -z` exists to carry")
+
+
+def make_repo_with_cr_name(root: Path) -> Path:
+    """A tracked file whose name embeds a literal CR — the case `-z` exists
+    for: without it, `git ls-files` would return a C-quoted string instead of
+    the raw path."""
+    repo = make_repo(root)
+    (repo / CR_NAME).write_text("cr\n")
+    subprocess.check_call(["git", "add", "-A"], cwd=str(repo))
+    return repo
+
+
+@needs_cr_filenames
+def test_write_survives_a_tracked_filename_containing_a_cr(tmp_path):
+    """Regression: `tracked_files()` read `git ls-files -z` through
+    `text=True`, which enables universal-newline decoding and rewrites the CR
+    inside the path to LF. The script then looked up a file that does not
+    exist and died with FileNotFoundError. Red before the fix, green after."""
+    repo = make_repo_with_cr_name(tmp_path)
+    proc = run("--root", str(repo), "--write")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "3 row(s)" in proc.stdout
+    # A bytes assert: a CR silently rewritten to LF would not be caught by a
+    # str comparison once both sides went through the same broken decode.
+    assert CR_NAME.encode() in (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+
+@needs_cr_filenames
+def test_a_cr_named_path_round_trips_through_the_check(tmp_path):
+    """Once written, the CR-named row must parse back under the SAME name in
+    both the plain check and `--strict` — not as two garbled rows, and not as
+    a path that reappears as "tracked but not listed"."""
+    repo = make_repo_with_cr_name(tmp_path)
+    write_manifest(repo)
+
+    proc = run("--root", str(repo))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK: 3 file(s) match" in proc.stdout
+    assert "tracked but not listed" not in proc.stderr
+
+    proc = run("--root", str(repo), "--strict")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK: 3 file(s) match" in proc.stdout
+    assert "tracked but not listed" not in proc.stderr
+
+
+@needs_cr_filenames
+def test_a_second_write_over_a_cr_named_path_changes_no_byte(tmp_path):
+    """Mirrors `test_rewriting_the_manifest_is_idempotent_byte_for_byte`: a
+    mismatched decode/encode handler on the CR-named row would otherwise show
+    up only as a manifest that churns on every regeneration."""
+    repo = make_repo_with_cr_name(tmp_path)
+    write_manifest(repo)
+    first = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+    write_manifest(repo)
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes() == first
+
+
+def _interpreter_below_310() -> str | None:
+    """A python on this host older than 3.10, or None if there isn't one.
+
+    The floor is not arbitrary. `vcs/derived_conflict.py::_inventory_argv`
+    hands this script a bare ``python3`` when the product is a frozen build
+    with no interpreter of its own, and on macOS that resolves to
+    /usr/bin/python3, which is 3.9.
+    """
+    for candidate in ("/usr/bin/python3", "python3.9", "python3.8"):
+        try:
+            out = subprocess.run(
+                [candidate, "-c",
+                 "import sys; print(sys.version_info[0], sys.version_info[1])"],
+                capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if out.returncode != 0:
+            continue
+        try:
+            major, minor = (int(part) for part in out.stdout.split())
+        except ValueError:
+            continue
+        if (major, minor) < (3, 10):
+            return candidate
+    return None
+
+
+def test_write_runs_on_the_oldest_interpreter_the_resolver_can_pick(tmp_path):
+    """Regression: `--write` used a `Path.write_text` keyword added in 3.10.
+
+    "Standard library + git only" is this script's stated contract, and it
+    held — the failure was an API LEVEL, not an import, which is a distinction
+    that cost the derived-artefact conflict resolver every pull request it was
+    called on: `--write` raised TypeError under the bare `python3` that
+    `_inventory_argv` hands it, and each conflict escalated to a human instead
+    of being regenerated.
+
+    This skips on a host that has no interpreter below 3.10 — a CI ubuntu
+    runner is one — so it is a developer-machine convenience, not the gate.
+    The gate is the `File inventory` job in .github/workflows/ci.yml, which
+    installs 3.9 explicitly and runs this same command.
+    """
+    old_python = _interpreter_below_310()
+    if old_python is None:
+        pytest.skip(
+            "no interpreter below 3.10 on this host; the real gate is the "
+            "`File inventory` job in .github/workflows/ci.yml, which installs "
+            "3.9 with actions/setup-python and runs `--write` under it")
+
+    repo = make_repo(tmp_path)
+    proc = subprocess.run([old_python, str(SCRIPT), "--root", str(repo), "--write"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+
+def test_the_old_interpreter_produces_the_same_bytes_as_this_one(tmp_path):
+    """The manifest is compared as bytes by git, so "runs" is not enough: the
+    two interpreters must write the identical file, or a resolver regenerating
+    under 3.9 would produce a diff against a manifest written under 3.12."""
+    old_python = _interpreter_below_310()
+    if old_python is None:
+        pytest.skip("no interpreter below 3.10 on this host (see the test above)")
+
+    repo = make_repo(tmp_path)
+    subprocess.run([sys.executable, str(SCRIPT), "--root", str(repo), "--write"],
+                   capture_output=True, text=True, check=True)
+    current = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+    (repo / "RELEASE_MANIFEST.txt").unlink()
+    subprocess.run([old_python, str(SCRIPT), "--root", str(repo), "--write"],
+                   capture_output=True, text=True, check=True)
+
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes() == current
+
+
 def test_rewriting_the_manifest_is_idempotent_byte_for_byte(tmp_path):
     """A second `--write` over an unchanged tree must not alter a single byte,
     which is what makes a large diff a real signal rather than noise."""
@@ -549,3 +689,93 @@ def test_an_unreadable_previous_manifest_costs_only_the_note(tmp_path):
     proc = run("--root", str(repo), "--write")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "existing row(s) changed" not in proc.stderr
+
+
+
+# --------------------------------------------------------------------------
+# Windows checkout line-ending guard (issue #505)
+# --------------------------------------------------------------------------
+
+def _force_reviewed_lf_tree(repo: Path) -> None:
+    """Make the fixture's tracked text bytes canonical LF on every host."""
+    (repo / "README.md").write_bytes(b"hello\n")
+    (repo / "pkg" / "a.py").write_bytes(b"A = 1\n")
+
+
+def _force_crlf(path: Path) -> None:
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(data.replace(b"\n", b"\r\n"))
+
+
+def test_check_diagnoses_crlf_hash_matches_instead_of_recommending_write(tmp_path):
+    """A Windows-style checkout mismatch is not content that should be re-pinned."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    _force_crlf(repo / "README.md")
+    _force_crlf(repo / "pkg" / "a.py")
+
+    proc = run("--root", str(repo))
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LINE ENDINGS:" in proc.stderr
+    assert "LF-normalized bytes match the reviewed pins exactly" in proc.stderr
+    assert "README.md" in proc.stderr
+    assert "core.autocrlf=" in proc.stderr
+    assert "Do NOT run --write" in proc.stderr
+    # Backticks, matching what the script really prints (`REMEDY: regenerate
+    # with \`python ...\``). Asserted with single quotes this could never fail:
+    # the substring did not occur on ANY branch, so the guard was vacuous.
+    assert "regenerate with `python scripts/check_release_manifest.py" not in proc.stderr
+
+
+def test_write_refuses_crlf_only_drift_and_leaves_manifest_unchanged(tmp_path):
+    """The destructive path is stopped before a CRLF checkout can rewrite pins."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    manifest = repo / "RELEASE_MANIFEST.txt"
+    before = manifest.read_bytes()
+    subprocess.check_call(["git", "config", "core.autocrlf", "true"], cwd=str(repo))
+    _force_crlf(repo / "README.md")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "--write: REFUSED" in proc.stderr
+    assert "README.md" in proc.stderr
+    assert "core.autocrlf=true" in proc.stderr
+    assert "LF-normalized bytes still match the reviewed manifest" in proc.stderr
+    assert manifest.read_bytes() == before
+
+
+def test_write_does_not_refuse_real_content_change_just_because_autocrlf_is_true(tmp_path):
+    """The guard detects conversion evidence, not the config bit by itself."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    subprocess.check_call(["git", "config", "core.autocrlf", "true"], cwd=str(repo))
+    (repo / "README.md").write_bytes(b"genuinely changed content\r\n")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "REFUSED" not in proc.stderr
+    assert "wrote " in proc.stdout
+
+
+def test_any_crlf_only_pin_blocks_a_mixed_regeneration(tmp_path):
+    """One converted reviewed file is enough to make a wide rewrite unsafe."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    manifest = repo / "RELEASE_MANIFEST.txt"
+    before = manifest.read_bytes()
+    _force_crlf(repo / "README.md")
+    (repo / "pkg" / "a.py").write_bytes(b"A = 2\n")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "README.md" in proc.stderr
+    assert manifest.read_bytes() == before

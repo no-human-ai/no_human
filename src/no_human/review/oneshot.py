@@ -1,12 +1,16 @@
 """The one-shot review gate: reviewer + tamper guard, no Store, no server.
 
-This is the SINGLE entry point for running the fresh-session reviewer without
-the orchestrator's daemon/Store machinery. Anything that wants "run the gate
-once, right now, over a diff" — today that is the `nh gate` CLI verb and the
-`review-this-branch` plugin skill — calls :func:`run_gate` here rather than
-constructing `AdversarialReviewer` itself. Keeping exactly one construction
-site means the model/timeout config, the diff-cap, and the single-turn/
-no-tools safety property stay in one place.
+This module is where the fresh-session reviewer is constructed for every
+no-daemon path, so the model/timeout config and the single-turn/no-tools
+safety property stay in one place. Two entry points sit on top of it.
+:func:`run_gate` is the whole gate for a checkout — it resolves the refs,
+computes the diff, runs the tamper guard and materializes the head — and
+backs the `nh gate` CLI verb and the `review-this-branch` plugin skill.
+:func:`review_diff` is the seam for a caller that already has a diff and its
+refs, today the GitHub Action, which brings its own refs, file cap,
+credential handling and comment rendering. Both refuse a diff larger than the
+reviewer's internal cap rather than review a truncated prefix; nothing else
+in `src/` may construct the reviewer for a one-shot review.
 
 Reads and reports only: every git call this module makes against the user's
 own checkout is read-only plumbing — `rev-parse`, `merge-base`, `diff`,
@@ -70,6 +74,7 @@ from ..config import (
 from ..core.role_backend_settings import effective_role_backend
 from ..core.runtime import assert_task_backend_usable
 from ..core.task import Task
+from ..review.diff_coverage import DiffCoverageError, budget_diff
 from ..review.reviewer import _DIFF_CAP, AdversarialReviewer, ReviewDecision, ReviewerUnavailable
 from ..testing import tamper_guard
 from ..testing.runner import TamperCheckUnavailable, tamper_check_between
@@ -585,20 +590,31 @@ async def run_gate(
             f"{after_ref[:7]}: the diff is empty"
         )
 
-    # `AdversarialReviewer.review` silently truncates `diff_override` to
-    # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
-    # caller — a diff bigger than the cap would otherwise get a fraction of
-    # itself reviewed and could still print a bare PASS on that partial
-    # view. Refuse by name BEFORE the tamper guard runs or the reviewer is
-    # constructed (and billed) at all: a gate that cannot see the whole diff
-    # has not really reviewed anything, so this must be exit 2 ("could not
-    # run"), never exit 1 with an empty or partial checklist.
+    # `AdversarialReviewer.review`'s `diff_override` path now bounds an
+    # over-cap diff through `_bounded_override_diff` and DISCLOSES the cut
+    # files to the reviewer instead of silently dropping them (see that
+    # helper's docstring) — but disclosure is not enough for a gate: a
+    # verdict reached on a partial view is still a verdict on a partial
+    # view. So the gate keeps its own, stricter policy: refuse by name
+    # BEFORE the tamper guard runs or the reviewer is constructed (and
+    # billed) at all, naming which changed files would have lost patch
+    # content, so this must be exit 2 ("could not run"), never exit 1 with
+    # an empty or partial checklist.
     if len(diff) > _DIFF_CAP:
+        try:
+            _, would_cut = budget_diff(diff, _DIFF_CAP)
+        except DiffCoverageError:
+            would_cut = []
+        cut_note = (
+            "; the patches these changed file(s) would lose: "
+            + ", ".join(would_cut[:10])
+            + (f" (+{len(would_cut) - 10} more)" if len(would_cut) > 10 else "")
+        ) if would_cut else ""
         raise GateUnavailable(
             f"the diff is {len(diff):,} characters, over the single-turn "
             f"review cap of {_DIFF_CAP:,} characters — refusing rather than "
             "construct and bill a reviewer that would only see a truncated "
-            "prefix of the change"
+            "prefix of the change" + cut_note
         )
 
     try:
@@ -698,6 +714,46 @@ async def run_gate(
         reviewer_backend=role_backend["backend"],
         reviewer_model=role_backend["model"],
         reviewer_backend_is_default=role_backend["is_default"],
+    )
+
+
+async def review_diff(
+    task: Task,
+    *,
+    repo_path: Path,
+    diff: str,
+    before_ref: str,
+    after_ref: str,
+    model: str | None = None,
+) -> ReviewDecision:
+    """Review one pre-computed diff, single-turn, no daemon and no database.
+
+    The caller owns everything around the review — where the diff came from,
+    how it was capped, the credential, and what happens to the verdict. This
+    module owns the construction of the reviewer and the ``diff_override``
+    call itself, so that stays in exactly one place (see
+    ``test_only_one_module_constructs_the_oneshot_reviewer_call``); a second
+    caller growing its own parallel path is the thing that test exists to
+    stop. ``run_gate`` is the full gate for a checkout; this is the seam for
+    a caller that already has the diff and its refs, such as the CI Action.
+
+    ``model`` pins the reviewer's model explicitly; without it the reviewer
+    is built from config exactly as ``run_gate`` builds it. Raises whatever
+    the reviewer raises (notably ``ReviewerUnavailable`` for "no verdict"),
+    so the caller decides how a non-verdict is reported.
+    """
+    reviewer = (
+        AdversarialReviewer(model=model) if model
+        else AdversarialReviewer.from_config(load_config(create_if_missing=False).data)
+    )
+    return await reviewer.review(
+        task,
+        repo_path=repo_path,
+        diff_override=diff,
+        before_ref=before_ref,
+        after_ref=after_ref,
+        single_turn=True,
+        reviewed_sha=after_ref,
     )
 
 

@@ -7338,6 +7338,65 @@ def doctor(verbose, verify_auth, fix_walks, dry_run):
         sys.exit(1)
 
 
+@cli.command("diverged")
+@click.option("--json", "as_json", is_flag=True,
+              help="Print machine-readable JSON instead of a table.")
+def diverged(as_json):
+    """Measure how many live tasks have a branch diverged from its own
+    pushed tip (acceptance criterion 5 of the recut fix — size the problem
+    instead of assuming it).
+
+    Read-only: this never pushes, fetches into a tracking ref, or writes to
+    the task store — it only classifies each live task's branch(es) against
+    their own remote tip via `git ls-remote` + local ancestry checks.
+
+    \b
+    Exit code is always 0 — this is informational, not a gate: a diverged
+    branch a recut already recovered from is not itself a failure.
+    """
+    from ..core.diverged_audit import audit_diverged_tasks
+
+    config, _ = _bootstrap(require_auth=False)
+
+    async def _go():
+        async with Store(config.db_path) as store:
+            report = await audit_diverged_tasks(store, config.data)
+
+        if as_json:
+            # click.echo, not console.print: Rich wraps long lines (a task
+            # title), corrupting the embedded JSON with a stray newline.
+            click.echo(json.dumps({
+                "scanned": report.scanned,
+                "counts": report.counts,
+                "rows": [
+                    {
+                        "task_id": r.task_id,
+                        "title": r.title,
+                        "branch": r.branch,
+                        "local_sha": r.local_sha,
+                        "remote_sha": r.remote_sha,
+                        "state": r.state,
+                    }
+                    for r in report.rows
+                ],
+            }, indent=2))
+            return True
+
+        for r in report.rows:
+            if r.state == "up_to_date":
+                continue
+            colour = {"diverged": "red", "behind": "yellow"}.get(r.state, "dim")
+            console.print(
+                f"[{colour}]{r.state:<10}[/] {r.task_id}  {r.branch}  "
+                f"[dim]{r.title}[/]")
+        console.print(
+            f"{report.diverged_count} task(s) diverged of {report.scanned} "
+            f"live task(s) scanned")
+        return True
+
+    asyncio.run(_go())
+
+
 @cli.command("start")
 @click.option("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
 @click.option("--port", default=None, type=int, help="Bind port (default from config).")

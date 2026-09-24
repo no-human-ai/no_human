@@ -1,0 +1,16 @@
+> desktop@0.4.0 dist:linux
+> electron-builder --linux deb AppImage --publish never
+
+  • electron-builder  version=26.0.12 os=6.8.0
+  • loaded configuration  file=electron-builder.config.cjs
+node:internal/modules/cjs/loader:1147
+  throw err;
+  ^
+
+Error: Cannot find module 'dmg-license'
+Require stack:
+- /home/runner/work/no_human/no_human/desktop/node_modules/app-builder-lib/out/targets/dmg.js
+    at Function.Module._resolveFilename (node:internal/modules/cjs/loader:1144:15)
+    at Function.Module._load (node:internal/modules/cjs/loader:985:27)
+Node.js v22.11.0
+Error: Process completed with exit code 1.

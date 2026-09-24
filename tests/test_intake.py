@@ -63,6 +63,58 @@ def test_gitlab_normalize():
     assert task.acceptance_criteria == ["retries 3x"]
 
 
+@pytest.mark.parametrize(("adapter", "raw", "expected"), [
+    (GitHubAdapter(), {
+        "number": 17, "title": "Plain criteria",
+        "body": "## Acceptance criteria\n\n- parses plain bullets\n- stops at next heading\n\n## Notes\n- not a criterion",
+        "_ref": {"host": "github.com", "owner": "o", "repo": "r"},
+    }, ["parses plain bullets", "stops at next heading"]),
+    (GitLabAdapter(), {
+        "iid": 18, "title": "Plain criteria",
+        "description": "## Acceptance criteria\n- parses plain bullets\n- keeps order",
+        "_ref": {"host": "gitlab.com", "project_path": "g/p"},
+    }, ["parses plain bullets", "keeps order"]),
+])
+def test_issue_adapters_extract_plain_bullets_from_acceptance_criteria(
+        adapter, raw, expected):
+    task = adapter.normalize(raw)
+    assert task.acceptance_criteria == expected
+
+
+@pytest.mark.parametrize(("adapter", "raw", "issue_name"), [
+    (GitHubAdapter(), {
+        "number": 19, "body": "## Acceptance criteria\n\nText only.",
+        "_ref": {"host": "github.com", "owner": "o", "repo": "r"},
+    }, "GitHub issue o/r#19"),
+    (GitLabAdapter(), {
+        "iid": 20, "description": "## Acceptance criteria\n\nText only.",
+        "_ref": {"host": "gitlab.com", "project_path": "g/p"},
+    }, "GitLab issue g/p#20"),
+])
+def test_issue_adapters_warn_for_empty_acceptance_criteria_heading(
+        adapter, raw, issue_name, caplog):
+    with caplog.at_level("WARNING", logger="no_human.intake.criteria"):
+        assert adapter.normalize(raw).acceptance_criteria == []
+    assert issue_name in caplog.text
+    assert "--criteria" in caplog.text
+
+
+@pytest.mark.parametrize(("adapter", "raw"), [
+    (GitHubAdapter(), {
+        "number": 21, "body": "No criteria here.",
+        "_ref": {"host": "github.com", "owner": "o", "repo": "r"},
+    }),
+    (GitLabAdapter(), {
+        "iid": 22, "description": "No criteria here.",
+        "_ref": {"host": "gitlab.com", "project_path": "g/p"},
+    }),
+])
+def test_issue_adapters_leave_missing_criteria_silent(adapter, raw, caplog):
+    with caplog.at_level("WARNING", logger="no_human.intake.criteria"):
+        assert adapter.normalize(raw).acceptance_criteria == []
+    assert not caplog.records
+
+
 @pytest.mark.parametrize("text,expected", [
     ("Fix the flaky E2E test", True),
     ("add retries", True),

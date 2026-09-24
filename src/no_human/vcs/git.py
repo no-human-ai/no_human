@@ -134,6 +134,13 @@ def _behind_message(branch: str, remote: str, sha: str) -> str:
     )
 
 
+#: Relations that read "diverged" before `ahead` existed. Callers that have
+#: not been taught the new value normalize through this, so their behaviour
+#: on an ahead branch is byte-identical to before.
+def _legacy_relation(relation: str) -> str:
+    return "diverged" if relation == "ahead" else relation
+
+
 #: Env vars that OUTRANK `-c user.name=`/`-c user.email=` in git's own
 #: precedence order. The orchestrator exports these into the process env for
 #: the coder's Bash tool (`Orchestrator._agent_git_identity`) — on that same
@@ -282,6 +289,7 @@ class GitRepo:
         # an unclassifiable `exec:git <dynamic>` (test_egress_allowlist).
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -291,6 +299,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                     env=run_env, **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -320,6 +329,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -330,6 +340,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+                    encoding="utf-8", errors="replace",
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -362,6 +373,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -371,6 +383,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+                    encoding="utf-8", errors="replace",
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -1235,6 +1248,7 @@ class GitRepo:
         proc = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, descendant],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         return proc.returncode == 0
@@ -1253,6 +1267,7 @@ class GitRepo:
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if have_obj.returncode == 0:
@@ -1262,6 +1277,7 @@ class GitRepo:
             ["git", "fetch", "--refmap=", remote,
              f"+refs/heads/{branch}:{private_ref}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if fetched.returncode != 0:
@@ -1269,6 +1285,7 @@ class GitRepo:
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         return have_obj.returncode == 0
@@ -1295,6 +1312,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", "--heads", remote, *patterns],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1318,6 +1336,38 @@ class GitRepo:
             except Exception:  # noqa: BLE001 — one bad ref must not sink the rest
                 continue
         return matches
+
+    def list_remote_branch_names(self, pattern: str, *, remote: str = "origin",
+                                  timeout: int = 30) -> list[str]:
+        """Names (no `refs/heads/` prefix) of remote branches matching `pattern`.
+
+        `git ls-remote --heads <remote> <pattern>` — the same read as
+        `remote_branches_containing`, minus the sha-containment check: this
+        is a name-only listing, used by `vcs/recut.py` to find the highest
+        `<stem>-N` suffix already published so a recut never collides with a
+        name the remote has already advertised. Read-only, writes no ref.
+        Every unreadable state (rc != 0, empty stdout, a timeout, or `git`
+        missing) returns `[]` — fails closed to "assume nothing is published
+        under this pattern", exactly like `remote_branches_containing`.
+        """
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", "--heads", remote, pattern],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        if ls.returncode != 0 or not ls.stdout.strip():
+            return []
+        names = []
+        for line in ls.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].startswith("refs/heads/"):
+                continue
+            names.append(parts[1].removeprefix("refs/heads/"))
+        return names
 
     def ls_remote_exact(self, ref: str, *, remote: str = "origin",
                          timeout: int = 30) -> str | None:
@@ -1354,6 +1404,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, ref],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1450,6 +1501,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, f"refs/heads/{branch}"],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1539,8 +1591,10 @@ class GitRepo:
 
         Returns ``"behind"`` (local is an ancestor of the remote tip — the
         remote holds commits this tree does not, e.g. an earlier attempt's
-        push), ``"diverged"`` (neither is an ancestor of the other, e.g. a
-        local rebase of an already-pushed branch), ``"up_to_date"``, or
+        push), ``"ahead"`` (the remote tip is an ancestor of local — the
+        branch simply hasn't been pushed since review; safe to fast-forward),
+        ``"diverged"`` (neither is an ancestor of the other, e.g. a local
+        rebase of an already-pushed branch), ``"up_to_date"``, or
         ``"unknown"`` when the relation cannot be determined (branch never
         pushed, remote unreachable, or its object isn't available locally —
         fail-open to today's behaviour: nothing here BLOCKS a force, only a
@@ -1566,6 +1620,7 @@ class GitRepo:
         ls = subprocess.run(
             ["git", "ls-remote", remote, f"refs/heads/{branch}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if ls.returncode != 0 or not ls.stdout.strip():
@@ -1575,7 +1630,11 @@ class GitRepo:
             return "up_to_date"
         if not self._have_remote_commit(remote, branch, remote_sha, timeout):
             return "unknown"
-        return "behind" if self.is_ancestor(local, remote_sha) else "diverged"
+        if self.is_ancestor(local, remote_sha):
+            return "behind"
+        if self.is_ancestor(remote_sha, local):
+            return "ahead"
+        return "diverged"
 
     def diff(self, ref: str = "HEAD~1") -> str:
         return self._run("diff", ref, "HEAD", check=False)
@@ -1602,6 +1661,7 @@ class GitRepo:
             subprocess.run(
                 ["git", *args],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1691,7 +1751,8 @@ class GitRepo:
         args = ["push"]
         if force_with_lease:
             try:
-                relation = self.remote_branch_relation(branch, remote=remote)
+                relation = _legacy_relation(
+                    self.remote_branch_relation(branch, remote=remote))
             except Exception:
                 # Fail OPEN: an unreachable remote, an unpushed branch, or an
                 # auth failure must never silently disable delivery — only a
@@ -1699,8 +1760,8 @@ class GitRepo:
                 relation = "unknown"
             if relation == "behind":
                 raise PushBehindRemote(_behind_message(branch, remote, sha))
-            # "unknown" / "diverged" / "up_to_date" all fall through and
-            # force, exactly as today.
+            # "unknown" / "diverged" (incl. "ahead", normalized above) /
+            # "up_to_date" all fall through and force, exactly as today.
             # NO fetch here — see the docstring: refreshing the tracking ref
             # is what would make the lease vacuous.
             args += ["--force-with-lease"]

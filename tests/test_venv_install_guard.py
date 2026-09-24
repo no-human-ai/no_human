@@ -15,7 +15,9 @@ the-worktree.
 
 import contextlib
 import logging
+import ntpath
 import os
+import pathlib
 import shutil
 import stat
 import tempfile
@@ -2681,3 +2683,138 @@ def test_341_open_an_env_shebang_names_no_path_and_is_not_identified(tmp_path):
         f"{notpip} install evilpkg", cwd=wt, env=prod_env) is None, (
         "if this now denies, update the residual-risk register and delete "
         "this test")
+
+
+# ---------------------------------------------------------------------------
+# Decision-level ("Windows's Windows-shaped ...") coverage: the section above
+# (`test_a_native_separator_realpath_still_resolves_...`, etc.) stops at the
+# RESOLVER's own return value — its header comment explains why a full
+# `denial_reason` DENY would be VACUOUS there: `_venv_root_of` calls the
+# plain `os.path.dirname`/`os.path.join`, which is always `posixpath` on a
+# POSIX test host regardless of `_IS_WINDOWS`, and `posixpath.dirname` of a
+# fully-backslashed string returns `""` unconditionally, so `_venv_root_of`
+# always answers `None` there — a DENY assertion downstream of it would pass
+# (or fail) by that accident, not by the fix under test.
+#
+# The test below closes that gap a different way: instead of flipping only
+# `_IS_WINDOWS` and a couple of return-value spellings, it replaces
+# `venv_install_guard`'s own `os` and `Path` names with stand-ins whose
+# `.path`/`.is_relative_to` genuinely parse backslash the way they do on a
+# real Windows host (`os.path` IS `ntpath` there; `pathlib.Path` IS
+# `PureWindowsPath`-shaped there). That makes `_venv_root_of`'s plain
+# `os.path.dirname`/`os.path.join` calls — untouched, never mocked directly —
+# split a backslash path correctly, so the DENY/ALLOW this test asserts is
+# `denial_reason`'s actual decision, not a resolver-level proxy for it.
+# ---------------------------------------------------------------------------
+
+
+def test_windows_decision_denies_foreign_and_allows_own_venv(tmp_path):
+    r"""Decision-level (`denial_reason`) coverage for the native-separator
+    fix, one level up from the resolver-level assertions in the section
+    above.
+
+    This test SIMULATES a Windows host on this POSIX test runner, via
+    `ntpath` and `PureWindowsPath` — it is NOT a platform test and proves
+    nothing about behaviour on a real Windows machine; do not read it as
+    Windows-host coverage.
+
+    The simulation swaps exactly two names inside `venv_install_guard`'s own
+    namespace, `os` and `Path`, for the duration of this test:
+      * `os.path` becomes real `ntpath`, so `_venv_root_of`'s plain
+        `os.path.dirname`/`os.path.join` calls split a resolved path on `\`
+        the way they do on a real Windows host (where `os.path` IS
+        `ntpath`) — see this section's header comment for why the existing
+        resolver-level tests could not exercise this and stopped at the
+        resolver's return value instead.
+      * `Path` becomes `PureWindowsPath`, so `_is_within`'s
+        `Path(path).is_relative_to(root)` reads two backslash-spelled paths
+        the way a real Windows host's `pathlib.Path` would.
+      * `os.stat`/`os.access` — the only calls in this module that touch a
+        real file — translate a backslash argument back to `/` before
+        delegating to the genuine `os` module, so the venv/files `_session`
+        actually created on this POSIX runner are still found by them.
+
+    Confinement/reversibility: only `venv_install_guard.os`,
+    `venv_install_guard.Path`, and `venv_install_guard._IS_WINDOWS` — this
+    module's OWN three names — are ever reassigned. `sys.modules["os"]`, the
+    real `pathlib.Path` class, and the real `os.stat`/`os.access` are never
+    touched, so nothing else importing `os`/`pathlib` in this same process
+    is affected. Restoration is manual (a plain `try`/`finally`, not the
+    `monkeypatch` fixture) specifically so this test can assert the
+    restoration explicitly rather than trust fixture teardown implicitly;
+    `test_windows_simulation_does_not_leak_into_later_tests` immediately
+    below re-checks the same three names from a fresh test, independent of
+    this test's own bookkeeping, as an ordering-based second proof.
+
+    Both a REFUSE and an ALLOW are asserted here so this test cannot pass by
+    refusing everything: `prod_env` (PATH/VIRTUAL_ENV pointing at the shared
+    dev venv, `primary_venv`) must still be REFUSED even though every path
+    `denial_reason` sees along the way is backslash-spelled, and `wt_env`
+    (pointing at the session's own `wt_venv`) must still be ALLOWED under
+    the identical simulation.
+    """
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+
+    real_os = venv_install_guard.os
+    real_path_cls = venv_install_guard.Path
+    real_is_windows = venv_install_guard._IS_WINDOWS
+
+    class _SimulatedWindowsOs:
+        """Stand-in for the `os` module, installed ONLY as
+        `venv_install_guard.os` — never `sys.modules["os"]` — so nothing
+        else importing `os` in this process is affected."""
+
+        path = ntpath
+
+        def stat(self, target, *a, **kw):
+            return real_os.stat(target.replace("\\", "/"), *a, **kw)
+
+        def access(self, target, *a, **kw):
+            return real_os.access(target.replace("\\", "/"), *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+    venv_install_guard.os = _SimulatedWindowsOs()
+    venv_install_guard.Path = pathlib.PureWindowsPath
+    venv_install_guard._IS_WINDOWS = True
+    try:
+        denied = venv_install_guard.denial_reason(
+            "pip install evilpkg", cwd=wt, env=prod_env)
+        allowed = venv_install_guard.denial_reason(
+            "pip install evilpkg", cwd=wt, env=wt_env)
+    finally:
+        venv_install_guard.os = real_os
+        venv_install_guard.Path = real_path_cls
+        venv_install_guard._IS_WINDOWS = real_is_windows
+
+    assert denied is not None, (
+        "an install resolving to the shared dev venv must still be REFUSED "
+        "under a simulated Windows host — this is the guard's DECISION, not "
+        "just the resolver's return value")
+    assert allowed is None, (
+        "an install resolving to the session's own worktree venv must still "
+        "be ALLOWED under the identical simulated Windows host, or this "
+        "test would pass by refusing everything"
+    )
+
+    # Explicit teardown assertion: confinement means `venv_install_guard.os`/
+    # `.Path`/`._IS_WINDOWS` are exactly the real, global `os` module,
+    # `pathlib.Path` class, and this module's own original `_IS_WINDOWS` —
+    # never the simulated stand-ins — once this test has returned control.
+    assert venv_install_guard.os is os
+    assert venv_install_guard.Path is pathlib.Path
+    assert venv_install_guard._IS_WINDOWS == venv_install_guard.win_readings._IS_WINDOWS
+
+
+def test_windows_simulation_does_not_leak_into_later_tests():
+    """Ordering-based second proof, independent of the explicit teardown
+    assertion inside `test_windows_decision_denies_foreign_and_allows_own_venv`
+    above: whatever order pytest (or an xdist worker) actually runs this
+    file's tests in, `venv_install_guard.os`/`.Path`/`._IS_WINDOWS` must be
+    the real, global `os` module, `pathlib.Path` class, and this module's own
+    original `_IS_WINDOWS` here too — not the simulated stand-ins the test
+    above installs and (per its own assertion) restores."""
+    assert venv_install_guard.os is os
+    assert venv_install_guard.Path is pathlib.Path
+    assert venv_install_guard._IS_WINDOWS == venv_install_guard.win_readings._IS_WINDOWS

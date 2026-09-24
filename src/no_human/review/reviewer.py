@@ -47,6 +47,12 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
+from .diff_coverage import (
+    DiffCoverageError,
+    InspectionTracker,
+    budget_diff,
+    coverage_rejection_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +139,18 @@ _TRIVIAL_REVIEW_TURNS = 6
 # Constraint #4: retry only on infra failures, and boundedly. A reviewer that
 # never reaches a verdict is an infra failure, not a finding.
 _REVIEW_INFRA_RETRIES = 1
+# Fed into round N+1's prompt (appended, never mutating round N's) when round
+# N's `reason` was a coverage rejection — see the call site in `_agent_review`
+# for why only this no-verdict reason gets feedback.
+_COVERAGE_RETRY_NOTE = (
+    "\n\nPREVIOUS ROUND REJECTED — THE VERDICT WAS DISCARDED, NOT COUNTED.\n"
+    "{reason}\n"
+    "These files were CUT from the diff above, so the patch you were shown "
+    "does not contain their changes. Before reaching any verdict this round, "
+    "read each path listed above with a read/search tool and cite what you "
+    "found. A verdict over a file you did not open is discarded again and the "
+    "task escalates to a human unreviewed.\n"
+)
 # On a *timeout* (hung/saturated reviewer, not turn-starved) the retry's window
 # is halved down to this floor rather than granted another full one — a hang
 # won't clear in a second full window, it just doubles how long a task sits
@@ -389,6 +407,20 @@ class ReviewDecision:
     # spoke and said nothing usable". Only the tamper-adjudication branch
     # reads it; additive and ignored elsewhere (not in `as_dict`).
     transport_error: bool = False
+    # Non-empty when the citation root (repo_path's working tree) provably
+    # does not describe the after side of the reviewed range — e.g. a
+    # `diff_override` review of committed refs while the worktree carries
+    # uncommitted edits. In that state a failed citation check is evidence
+    # about the TREE, not about the finding, so demotion is suppressed (see
+    # `_verify_citations`). Empty everywhere else (not in `as_dict`, except
+    # additively when set).
+    citation_root_mismatch: str = ""
+    # True when the review passed ONLY because every blocking finding was
+    # demoted by the citation rule. Distinguishes "nothing was wrong" from
+    # "nothing survived verification" for callers that render the two
+    # differently. False on a genuinely clean pass, and False whenever
+    # `passed` is False (not in `as_dict`).
+    passed_due_to_demotion: bool = False
 
     @property
     def failed_items(self) -> list[ChecklistItem]:
@@ -426,11 +458,13 @@ class ReviewDecision:
             d["suggested_next"] = self.suggested_next
         if self.goal is not None:
             d["goal"] = self.goal
+        if self.citation_root_mismatch:
+            d["citation_root_mismatch"] = self.citation_root_mismatch
         d["verifiers"] = list(self.verifiers)
         return d
 
 
-def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int]:
+def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int, list[str]]:
     """Return (truncated_diff, total_length).
 
     `--no-ext-diff --no-textconv` are a SECURITY boundary, not formatting:
@@ -450,7 +484,45 @@ def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> t
         env=_git_subprocess_env("diff"),
     )
     raw = proc.stdout or ""
-    return raw[:_DIFF_CAP], len(raw)
+    try:
+        rendered, cut_paths = budget_diff(raw, _DIFF_CAP)
+    except DiffCoverageError as exc:
+        raise ReviewerUnavailable(f"review diff coverage unavailable: {exc}") from exc
+    return rendered, len(raw), cut_paths
+
+
+def _bounded_override_diff(raw: str) -> tuple[str, int]:
+    """Bound a caller-supplied diff at `_DIFF_CAP` without hiding a file.
+
+    DISCLOSURE, not inspection — deliberately different from `_git_diff`.
+    The refs path can require the reviewer to open every cut path, because
+    it has the refs and a multi-turn tool-enabled session. This path has
+    neither: the caller supplied the diff, `_fast_review` runs single-turn
+    with no tools, and `repo_path` is not guaranteed to hold the reviewed
+    content at all (`_root_mismatch_for_diff_override` exists because of
+    that). So the ledger here TELLS the reviewer which files were cut and
+    asks it to scope its verdict; it does not demand reads it cannot make,
+    and `review()` passes no `required_inspections` on this path — the
+    inspection guard would reject every verdict.
+
+    Never raises. A hard stop is the wrong answer for a diff that merely
+    got big (issue #437 closed a silent truncation, not a gate), so an
+    unsplittable diff falls back to a prefix cut plus an explicit note
+    saying so — the one thing that must not happen is a silent cut.
+    """
+    if len(raw) <= _DIFF_CAP:
+        return raw, len(raw)
+    try:
+        rendered, _cut = budget_diff(raw, _DIFF_CAP, inspection_required=False)
+        return rendered, len(raw)
+    except DiffCoverageError as exc:
+        dropped = len(raw) - _DIFF_CAP
+        note = (
+            f"\n[...diff truncated: {dropped:,} more chars not shown, and the "
+            f"per-file coverage ledger could not be built ({exc}). This cut is "
+            "unattributed to specific files — judge only what is shown.]\n"
+        )
+        return raw[:_DIFF_CAP - len(note)] + note, len(raw)
 
 
 def _changed_paths(repo_path: Path, before: str, after: str,
@@ -577,7 +649,7 @@ def _linked_repos_review_section(linked: list[tuple[Path, str]]) -> str:
         "you may also read any linked repo by absolute path with your tools.\n"
     ]
     for lpath, lbefore in linked:
-        diff, total = _git_diff(lpath, lbefore, "HEAD")
+        diff, total, _cut_paths = _git_diff(lpath, lbefore, "HEAD")
         if not diff.strip():
             parts.append(
                 f"\n--- linked repo {lpath} — NO CHANGES in this repo ---\n"
@@ -1680,6 +1752,10 @@ def merge_angle_findings(
     main.checklist.extend(appended)
     if any(_is_blocking(i) for i in appended):
         main.passed = False
+        # `passed_due_to_demotion` only ever describes a PASS — an angle that
+        # just flipped this pass to fail must not leave it stranded True on a
+        # decision that no longer passed.
+        main.passed_due_to_demotion = False
     return main
 
 
@@ -1754,30 +1830,116 @@ def _citation_fails_in_any(
     return reasons[0]
 
 
+def _citation_root_mismatch(repo_path: Path, *, reviewed_sha: str = "") -> str:
+    """Why ``repo_path``'s worktree cannot answer citation questions about the
+    reviewed range, or "" when it can.
+
+    ``_citation_fails`` opens files under ``repo_path`` on disk and trusts
+    that tree to describe the AFTER side of whatever range is being
+    reviewed. When the caller supplies a diff computed elsewhere
+    (``diff_override``) that trust is unverified — a worktree with
+    uncommitted edits, or checked out at the wrong commit, answers citation
+    questions about a DIFFERENT tree than the one the diff describes, and a
+    citation that fails for that reason says nothing about the finding.
+
+    Read-only plumbing, local, cheap. Conservative in BOTH directions: a git
+    invocation that fails is OUR error, never the tree's — it returns ""
+    (same rule as ``_citation_fails``'s OSError branch), so an unusual
+    checkout can never manufacture a gate failure.
+    """
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path, capture_output=True, text=True,
+        )
+    except OSError:
+        return ""
+    if status.returncode != 0:
+        return ""
+    paths = [ln for ln in status.stdout.splitlines() if ln.strip()]
+    if paths:
+        shown = ", ".join(p.strip() for p in paths[:3])
+        return (
+            f"working tree has {len(paths)} uncommitted path(s) — it is not "
+            f"the after side of the reviewed range ({shown})"
+        )
+    if reviewed_sha:
+        try:
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path, capture_output=True, text=True,
+            )
+        except OSError:
+            return ""
+        if head.returncode == 0:
+            h = head.stdout.strip()
+            sha = reviewed_sha.strip()
+            if h and sha and not h.startswith(sha) and not sha.startswith(h):
+                return (
+                    f"worktree HEAD {h[:12]} is not the reviewed sha {sha[:12]}"
+                )
+    return ""
+
+
+def _root_mismatch_for_diff_override(
+    repo_path: Path, reviewed_sha: str, diff_override: str | None, before_ref: str,
+) -> str:
+    """`_citation_fails` trusts `repo_path` to describe the AFTER side of the
+    reviewed range; with `diff_override` that diff came from elsewhere, so
+    that trust needs checking (see `_citation_root_mismatch`). The multi-turn
+    path reviews refs it read itself and needs no check — this only fires
+    for `diff_override` reviews."""
+    return (
+        _citation_root_mismatch(repo_path, reviewed_sha=reviewed_sha)
+        if diff_override and before_ref else ""
+    )
+
+
 def _verify_citations(
     items: list[ChecklistItem], repo_path: Path, before_ref: str,
     extra_repos: list[tuple[Path, str]] | None = None,
-) -> list[str]:
+    root_mismatch: str = "",
+) -> tuple[list[str], list[str]]:
     """Demote blocking findings whose citations don't check out. Mutates items.
+
+    Returns ``(demoted, undemotable)``: ``demoted`` are findings whose
+    citation genuinely failed against a citation root that matches the
+    reviewed range — the hallucination-guard path, unchanged. ``undemotable``
+    are findings whose citation failed while ``root_mismatch`` is set: the
+    tree itself cannot answer the question, so the finding is left BLOCKING
+    instead of demoted (a failed citation check there is evidence about the
+    tree, not about the finding).
 
     ``extra_repos`` are the task's linked repos as ``(path, before_ref)`` pairs;
     a citation valid in any of them is kept. Empty/None → single-repo behaviour
-    unchanged, byte-for-byte."""
+    unchanged, byte-for-byte. ``root_mismatch`` empty → behaviour is
+    byte-for-byte what it was before this parameter existed."""
     demoted: list[str] = []
+    undemotable: list[str] = []
     roots = [(repo_path, before_ref), *(extra_repos or [])]
     for item in items:
         if item.passed or not _is_blocking(item):
             continue
         reason = _citation_fails_in_any(item, roots)
-        if reason:
-            item.severity = "low"
+        if not reason:
+            continue
+        if root_mismatch:
             item.evidence = (
-                f"{item.evidence}\n[citation rule] cited location did not check "
-                f"out ({reason}) — demoted to advisory. Re-raise with a "
-                "verifiable file:line citation."
+                f"{item.evidence}\n[citation rule] cited location could not "
+                f"be checked ({reason}) because the citation root does not "
+                f"match the reviewed change ({root_mismatch}) — the finding "
+                "is NOT demoted; verify it against the reviewed refs."
             ).strip()
-            demoted.append(f"{item.label}: {reason}")
-    return demoted
+            undemotable.append(f"{item.label}: {reason}")
+            continue
+        item.severity = "low"
+        item.evidence = (
+            f"{item.evidence}\n[citation rule] cited location did not check "
+            f"out ({reason}) — demoted to advisory. Re-raise with a "
+            "verifiable file:line citation."
+        ).strip()
+        demoted.append(f"{item.label}: {reason}")
+    return demoted, undemotable
 
 
 def _goal_entry_citation_fails(
@@ -1932,6 +2094,7 @@ def _last_review_json_block(text: str) -> str | None:
 def _parse_review_output(
     text: str, repo_path: Path | None = None, before_ref: str = "HEAD~1",
     extra_repos: list[tuple[Path, str]] | None = None,
+    root_mismatch: str = "",
 ) -> ReviewDecision:
     raw = text or ""
     json_text: str | None = _last_review_json_block(raw)
@@ -2000,9 +2163,14 @@ def _parse_review_output(
     ]
     # The citation rule runs BEFORE the verdict: a blocking finding whose
     # cited location does not exist is advisory, and must not fail the gate.
-    demoted = (
-        _verify_citations(items, repo_path, before_ref, extra_repos)
-        if repo_path else []
+    # `undemotable` is not consumed here: `citation_root_mismatch` below is
+    # set from `root_mismatch` directly (a property of the tree, independent
+    # of whether any particular citation actually failed this round), and
+    # `_gate_verdict` already sees the still-blocking items in `items`.
+    demoted, _undemotable = (
+        _verify_citations(items, repo_path, before_ref, extra_repos,
+                          root_mismatch=root_mismatch)
+        if repo_path else ([], [])
     )
     # The goal block gets the same treatment: a `reachable: false` whose
     # entry_point does not check out is marked demoted — it is surfaced on the
@@ -2016,11 +2184,16 @@ def _parse_review_output(
             demoted.append(f"goal reachability: {reason}")
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else None
     suggested_next = data.get("suggested_next") if isinstance(data.get("suggested_next"), str) else None
+    passed = _gate_verdict(items, data, stages, goal=goal)
     return ReviewDecision(
-        passed=_gate_verdict(items, data, stages, goal=goal),
+        passed=passed,
         checklist=items, raw_output=text,
         suggested_next=suggested_next, stages=stages,
         demoted_citations=demoted, goal=goal,
+        citation_root_mismatch=root_mismatch,
+        passed_due_to_demotion=bool(
+            passed and demoted and not any(_is_blocking(i) for i in items)
+        ),
     )
 
 
@@ -2531,7 +2704,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref="HEAD", verify_citations=False)
 
         # Gate mode (default): original adversarial review.
-        full_files, omitted_files = "", []
+        full_files, omitted_files, cut_paths = "", [], []
         lint_evidence = ""
         wiring_evidence = ""
         type_evidence = ""
@@ -2545,15 +2718,18 @@ class AdversarialReviewer:
             if not diff_override else ""
         )
         if diff_override:
-            # Caller supplied the diff; there are no refs to read files from, and
-            # _fast_review runs single-turn with no tools.
-            diff = diff_override[:_DIFF_CAP]
-            diff_total_len = len(diff_override)
+            # DISCLOSURE, not inspection — the override path has no refs and
+            # no tools, so it names what it cut instead of demanding reads.
+            # See `_bounded_override_diff` for why this differs from _git_diff.
+            diff, diff_total_len = _bounded_override_diff(diff_override)
         else:
-            diff, diff_total_len = _git_diff(repo_path, before_ref, after_ref)
+            diff, diff_total_len, cut_paths = _git_diff(repo_path, before_ref, after_ref)
             full_files, omitted_files = _full_file_context(
                 repo_path, before_ref, after_ref,
             )
+        root_mismatch = _root_mismatch_for_diff_override(
+            repo_path, reviewed_sha, diff_override, before_ref,
+        )
         # Review depth scales with diff size: a small, risk-free diff (routed
         # by `core/review_routing.route`, called before this method) gets the
         # same single-turn, no-tools treatment as `diff_override` — the diff,
@@ -2612,7 +2788,8 @@ class AdversarialReviewer:
         # single-turn call (no tools). The model has everything it needs in
         # the prompt — no repo exploration.
         if diff_override or route_single_turn:
-            decision = await self._fast_review(prompt, repo_path, before_ref=before_ref)
+            decision = await self._fast_review(prompt, repo_path, before_ref=before_ref,
+                                               root_mismatch=root_mismatch)
             # R17: `_fast_review` has no no-verdict interception of its own, so
             # this exit used to hand the fail-closed sentinel to the verdict
             # handler as a finding against the DIFF. It is the gate — a gate
@@ -2634,6 +2811,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref=before_ref,
                 max_turns=self._tier_review_turns(task),
                 extra_repos=linked_repos or None,
+                required_inspections=cut_paths,
             )
 
         # Bounded refute pass (gate path only — see the module-level comment
@@ -2685,9 +2863,10 @@ class AdversarialReviewer:
                         [(repo_path, before_ref), *(linked_repos or [])],
                     )
                     if len(decision.demoted_citations) > demoted_before:
+                        was_passed = decision.passed
                         decision.passed = _gate_verdict(
-                            decision.checklist, {"passed": False},
-                            decision.stages, goal=decision.goal)
+                            decision.checklist, {"passed": False}, decision.stages, goal=decision.goal)
+                        decision.passed_due_to_demotion |= decision.passed and not was_passed
 
         # C3-G1: complex-tier tasks get parallel single-turn angle passes.
         # Angles are ADDITIVE and best-effort: one that times out or crashes
@@ -2706,7 +2885,8 @@ class AdversarialReviewer:
                 for name, focus in REVIEW_ANGLES
             ]
             results = await asyncio.gather(
-                *(self._fast_review(pr, repo_path, before_ref=before_ref)
+                *(self._fast_review(pr, repo_path, before_ref=before_ref,
+                                    root_mismatch=root_mismatch)
                   for _, pr in angle_prompts),
                 return_exceptions=True,
             )
@@ -2783,7 +2963,8 @@ class AdversarialReviewer:
 
     async def _fast_review(self, prompt: str, repo_path: Path,
                            *, before_ref: str = "HEAD~1",
-                           max_turns: int = 1) -> ReviewDecision:
+                           max_turns: int = 1,
+                           root_mismatch: str = "") -> ReviewDecision:
         """Single-turn review — diff already in prompt, no tools needed.
 
         `max_turns` defaults to 1 for every existing caller (angle passes, the
@@ -2805,7 +2986,8 @@ class AdversarialReviewer:
                 transport_error=True,
             )
         decision = _parse_review_output(result.final_text or "",
-                                        repo_path=repo_path, before_ref=before_ref)
+                                        repo_path=repo_path, before_ref=before_ref,
+                                        root_mismatch=root_mismatch)
         decision.tokens_used = result.tokens_used
         decision.cache_read_tokens = getattr(result, "cache_read_tokens", 0)
         decision.cache_creation_tokens = getattr(result, "cache_creation_tokens", 0)
@@ -2820,6 +3002,7 @@ class AdversarialReviewer:
         *, max_turns: int = _REVIEW_TURNS, timeout: int | None = None,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> ReviewDecision:
         """Multi-turn review — model can explore the repo with read-only tools.
 
@@ -2832,7 +3015,10 @@ class AdversarialReviewer:
 
         So: retry once with a larger budget (constraint #4 — infra-only, bounded),
         then raise :class:`ReviewerUnavailable` so the task escalates honestly.
-        No path here ever turns a missing verdict into a pass.
+        No path here ever turns a missing verdict into a pass. The retry prompt
+        is the SAME every round with one exception: a coverage rejection (see
+        the branch below, after `last_reason` is set) appends its own text —
+        the only no-verdict reason a reviewer can act on differently.
 
         A round that ERRORED is a round with no verdict (see ``_review_once``),
         which means a finding made in the last turn before truncation is
@@ -2885,12 +3071,17 @@ class AdversarialReviewer:
         # were billed — `_carry_usage` folds their spend onto whatever leaves
         # this method so the attempt row shows what the gate really cost.
         discarded: list[AgentResult] = []
+        # The prompt actually sent this round. Reset to `prompt` every
+        # iteration (not accumulated) so feedback never stacks across rounds —
+        # see the coverage-rejection branch below for why.
+        round_prompt = prompt
         for round_n in range(_REVIEW_INFRA_RETRIES + 1):
             budget = max_turns * (2 ** round_n)
             decision, reason, result = await self._review_once(
-                prompt, repo_path, max_turns=budget, timeout=round_timeout,
+                round_prompt, repo_path, max_turns=budget, timeout=round_timeout,
                 before_ref=before_ref, verify_citations=verify_citations,
                 extra_repos=extra_repos,
+                required_inspections=required_inspections,
             )
             if decision is not None:
                 # `result`'s own usage is already stamped on `decision`.
@@ -2906,6 +3097,35 @@ class AdversarialReviewer:
             # a missing verdict into a pass; only escalates a hang sooner.
             if reason.startswith("timed out"):
                 round_timeout = max(_REVIEW_MIN_RETRY_TIMEOUT, round_timeout // 2)
+            # A coverage rejection is the only no-verdict reason that is
+            # DETERMINISTIC IN THE REVIEWER'S OWN CHOICES and actionable: the
+            # reviewer that decided those cut paths were not worth opening
+            # decides that again on an identical prompt, now billed at double
+            # the turn budget and (since "reviewer reached a verdict without
+            # referencing..." does not start with "timed out") a FULL timeout
+            # window too — the most expensive no-verdict path there is (5
+            # escalated tasks, 83.2M raw / 18.4M weighted tokens reaching no
+            # verdict, task 68e66468 alone at 34.6M raw / 18 cut paths). So
+            # round N+1's prompt carries round N's rejection verbatim plus an
+            # instruction to open each named path — reset from `prompt`, not
+            # accumulated, so only the MOST RECENT rejection is fed forward: a
+            # path referenced in round N is no longer missing, and re-demanding
+            # it would send the reviewer chasing a path the guard is already
+            # satisfied on. The other three no-verdict reasons — timed out
+            # (hung/saturated, already handled by the halving above), no
+            # REVIEW_JSON block / bad stop reason (malformed or truncated
+            # output), errored session (dead transport / turn exhaustion) — are
+            # resource/format failures the reviewer cannot act on differently;
+            # the doubled turn budget already granted below IS the whole
+            # remedy for those, and appending text would only add noise and
+            # shrink the budget the retry exists to grant. This never relaxes
+            # the guard: `InspectionTracker.rejection()` is untouched, and a
+            # coverage rejection on the FINAL round still falls through to
+            # `ReviewerUnavailable` below, never a pass.
+            round_prompt = prompt
+            missing = coverage_rejection_paths(reason)
+            if missing:
+                round_prompt = prompt + _COVERAGE_RETRY_NOTE.format(reason=reason)
             log.warning(
                 "reviewer reached no verdict (%s) on round %d/%d (budget %d turns)",
                 reason, round_n + 1, _REVIEW_INFRA_RETRIES + 1, budget,
@@ -3055,6 +3275,7 @@ class AdversarialReviewer:
         self, prompt: str, repo_path: Path, *, max_turns: int, timeout: int,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> tuple[ReviewDecision | None, str, AgentResult | None]:
         """One reviewer session.
 
@@ -3067,11 +3288,13 @@ class AdversarialReviewer:
         decision it returns.
         """
         all_text_parts: list[str] = []
+        tracker = InspectionTracker(required_inspections)
         original_on_event = self._on_event
 
         def _capture_event(event):
             if event.text:
                 all_text_parts.append(event.text)
+            tracker.note_event(event)
             if original_on_event:
                 original_on_event(event)
 
@@ -3144,4 +3367,7 @@ class AdversarialReviewer:
         # Default None, not 0 — an absent split must stay distinguishable from
         # a measured zero all the way to `attempts.review_output_tokens`.
         decision.output_tokens = getattr(result, "output_tokens", None)
+        rejection = tracker.rejection()
+        if rejection:
+            return None, rejection, result
         return decision, "", result

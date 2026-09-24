@@ -6,34 +6,27 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
-### Fixed
-- **Windows: codebase context was silently lost on every task** —
-  `CodebaseSource._search` parsed `rg`/`grep` output as `path:line:text` via
-  `line.split(":", 2)`. A Windows absolute path carries a drive-letter colon
-  (`C:\repo\lib\math.js:12:  const y = 1`), so every hit became `Path('C')`
-  and `_gather_sync`'s `path.relative_to(repo)` then raised — caught per-source
-  by the gatherer, so the failure was one log line and the task ran with no
-  codebase context (and, since the exception aborted `_search` before
-  `_git_log`, no recent-commits chunk either). `_search` now parses with a
-  regex (`CodebaseSource._parse_match_line`) that matches the first
-  `:<digits>:` field non-greedily, so the drive colon (followed by a
-  backslash, not digits) stays in the path while a colon inside the matched
-  text is preserved.
-- **A hanging `gh`/`glab` call in the wake tick could stall the whole
-  scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
-  stalled with idle workers and a full queue (`tick_stalled: true`,
-  `seconds_since_last_tick: 647`). `tick()` awaits `WakeWatcher.tick()`,
-  which loops every parked task sequentially and calls
-  `pr_watcher._run_cli` per task; unlike its sibling `_git_rc` (same file),
-  `_run_cli`'s `await proc.communicate()` had no bound, so one hung forge
-  call (a stalled TLS handshake, an auth prompt reading a closed stdin, a
-  non-terminating `--paginate` walk) blocked every other parked task behind
-  it forever. `_run_cli` now bounds each invocation with a new
-  `_CLI_TIMEOUT` (120s, aligned with `_GIT_TIMEOUT`), reaping the hung
-  process group on expiry and returning `None` — the same fail-closed shape
-  every other `_run_cli` failure already produces, applied uniformly to
-  read- and write-side (`gh api POST/PATCH`, `glab api --method POST/PUT`)
-  calls alike.
+## [0.2.4] - 2026-09-17
+
+### Added
+- **Onboarding email, and a welcome from the founder.** The setup wizard now
+  asks for your email; official builds forward it to the hosted registration
+  intake over HTTPS (the endpoint is stamped into the build, `email/register.py`
+  posts it), which stores it and sends a one-time welcome — and nothing more
+  without you. A build you compile yourself has no endpoint stamped and forwards
+  nothing.
+- **The review gate runs outside a running server.** Use it from a session
+  as a plugin skill (review a branch with no server), or on a pull request in
+  your own repository as a GitHub Action — a pull request from a fork is
+  skipped before any credential is read, so untrusted head code never runs
+  next to a secret. The Action judges the diff alone: unlike a local run it
+  collects no lint, wiring or type evidence and does not explore the
+  repository, and it refuses a diff over the reviewer's single-turn cap rather
+  than review a truncated prefix.
+- **The running version is shown in About, resolved from one source**, so the
+  two version surfaces cannot drift.
+- **`nh task add --follows` records that one task supersedes another**, and
+  `nh approve` warns off a superseded task.
 
 ### Changed
 - **Wiring evidence reads JS/TS and class bodies, not just Python module top
@@ -55,8 +48,84 @@ All notable changes to no_human. The format follows
   name, a per-call timeout bounded nothing in aggregate) and returns the
   symbols it had already decided when the budget runs out. Still advisory, and
   every failure still resolves toward silence rather than toward an accusation.
-
 ### Fixed
+- **`latest-mac.yml` named a dmg that no release ever published.**
+  `desktop/electron-builder.config.cjs`'s `mac.target` included `dmg`
+  alongside `dir`/`zip`, so electron-builder's own dmg target ran during
+  every mac build and packagedFiles wrote a `files:` row for it
+  (`no_human-<version>-arm64.dmg`) into `latest-mac.yml` — even though that
+  target is signed but never notarized or stapled, and the DMG actually
+  shipped in every release comes from `packaging/make-dmg.sh`, built
+  separately from the `dir` target's `.app` bundle. The two were never
+  duplicates: electron-builder's own dmg is a different, unnotarized
+  artifact that Gatekeeper would refuse to open, and it was never uploaded —
+  so the `files:` row in `latest-mac.yml` pointed at a URL that 404s. This
+  was live in v0.2.2 and v0.2.3 (confirmed against the real published
+  releases, not just a local `dist/`); v0.1.7 and v0.2.0 separately shipped
+  Windows/Linux assets with no `latest.yml`/`latest-linux.yml` at all — the
+  same class of bug, an update feed silently absent or wrong, going
+  undetected because nothing checked a feed's `url:`/`path:` against what a
+  release actually uploads. Fixed at the source: `mac.target` is now
+  `["dir", "zip"]`, so electron-builder never builds, and therefore never
+  names, its own dmg. A new gate, `scripts/check_release_feeds.py` (wrapped
+  by the new `packaging/publish-release.sh`, now the documented way to
+  publish — see `docs/DISTRIBUTION.md` §5), checks every feed's referenced
+  asset against the release's actual asset list and checks that every
+  platform present in a release's assets has its feed, both before upload
+  and again against the live release afterward; a mismatch is a hard
+  blocker, not a warning.
+- **Approve & merge works in the shipped desktop app again.** In the frozen
+  build the merge gate shelled out through the packaged binary as if it were a
+  Python interpreter, so every `nh approve` and every board **Approve** failed
+  at the test step, and command output was decoded with the host locale rather
+  than UTF-8. The gate now resolves a real interpreter and decodes as UTF-8,
+  end to end — on your machine and in the frozen build.
+- **A non-Latin task title (Hebrew, Cyrillic, Japanese) no longer crashes the
+  run at commit on Windows.** `GitRepo`'s git reads decoded with the host
+  codepage (cp1255 and the like), which cannot decode git's UTF-8 output, so the
+  attempt died at the commit step and stranded the work on its branch with no
+  PR. All sixteen text-mode git subprocess calls now decode as UTF-8.
+- **Windows: codebase context was silently lost on every task** —
+  `CodebaseSource._search` parsed `rg`/`grep` output as `path:line:text` via
+  `line.split(":", 2)`. A Windows absolute path carries a drive-letter colon
+  (`C:\repo\lib\math.js:12:  const y = 1`), so every hit became `Path('C')`
+  and `_gather_sync`'s `path.relative_to(repo)` then raised — caught per-source
+  by the gatherer, so the failure was one log line and the task ran with no
+  codebase context (and, since the exception aborted `_search` before
+  `_git_log`, no recent-commits chunk either). `_search` now parses with a
+  regex (`CodebaseSource._parse_match_line`) that matches the first
+  `:<digits>:` field non-greedily, so the drive colon (followed by a
+  backslash, not digits) stays in the path while a colon inside the matched
+  text is preserved.
+- **A `workflow_dispatch` release build on `main` was cancelled by the next
+  push to `main`** — measured twice: run 35120284385 (`windows_release` on
+  main, head `b4663e4a`) was cancelled mid-NSIS-package when commit
+  `fbbc0817` landed and the push run took the group, skipping Verify
+  artefact / Checksums / Upload with no installer produced; earlier,
+  `faa1370c`'s own CI was cancelled by the next push, landing with no green
+  verdict. `.github/workflows/ci.yml`'s `concurrency.group` keyed only on
+  `github.workflow`/`github.ref`, so a dispatch and an ordinary push to the
+  same ref shared one group under `cancel-in-progress: true` and whichever
+  started last cancelled the other. The group now appends a constant
+  `-dispatch` discriminant for `workflow_dispatch` runs, isolating a release
+  build from same-ref pushes while two dispatches on the same ref still
+  serialize with each other; push/pull_request keep the unchanged
+  ref-based group.
+- **A hanging `gh`/`glab` call in the wake tick could stall the whole
+  scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
+  stalled with idle workers and a full queue (`tick_stalled: true`,
+  `seconds_since_last_tick: 647`). `tick()` awaits `WakeWatcher.tick()`,
+  which loops every parked task sequentially and calls
+  `pr_watcher._run_cli` per task; unlike its sibling `_git_rc` (same file),
+  `_run_cli`'s `await proc.communicate()` had no bound, so one hung forge
+  call (a stalled TLS handshake, an auth prompt reading a closed stdin, a
+  non-terminating `--paginate` walk) blocked every other parked task behind
+  it forever. `_run_cli` now bounds each invocation with a new
+  `_CLI_TIMEOUT` (120s, aligned with `_GIT_TIMEOUT`), reaping the hung
+  process group on expiry and returning `None` — the same fail-closed shape
+  every other `_run_cli` failure already produces, applied uniformly to
+  read- and write-side (`gh api POST/PATCH`, `glab api --method POST/PUT`)
+  calls alike.
 - `nhCanAutoUpdate` was computed only from the macOS signing plan, then
   stamped into the single `extraMetadata` block shared by every
   electron-builder platform target — so a credentialed Apple environment
@@ -89,6 +158,56 @@ All notable changes to no_human. The format follows
   and PATH-walk branches, and the `uv`/`uvx` exclusion in
   `_effective_prefixes`); `_basename` itself is unchanged and still used at
   every call site that reads a raw command token.
+- **The desktop app read no credential from a CRLF `.env`** — `tokenStore.mjs`
+  split on `"\n"`, so on a CRLF file every line kept a trailing `\r`; the
+  unanchored matcher's `$` then demanded end-of-string and the `\r` made the
+  whole line fail to match, so the entry was silently dropped rather than
+  mis-trimmed. Splitting on `/\r?\n/` is the fix — `.trim()` would not have been.
+- **A frozen build's pytest rescue re-invoked the `nh` binary instead of
+  Python** — when a bare `pytest` could not import pytest, the test runner
+  retried with `sys.executable -m pytest`, but in the PyInstaller desktop build
+  `sys.executable` *is* the frozen `nh` binary, so the rescue re-entered the CLI
+  and died on `No such option '-m'` — it fired exactly when it was needed and
+  structurally could not work. It now resolves a real interpreter through the
+  shared `proc.real_python` resolver, and fails closed when none exists rather
+  than manufacturing a result.
+- **A review could pass while every blocking finding was silently demoted** —
+  when the citation root disagreed with the reviewed diff, the gate discarded the
+  findings instead of the mismatched root, turning a FAIL into a PASS with no
+  signal that it had happened.
+- **A task whose branch was rewritten after being pushed could never deliver**
+  — a rebase, squash or manual amend leaves the remote holding a commit the new
+  local tip does not descend from, and delivery correctly refuses rather than
+  force-pushing; with no recovery path, every following attempt reproduced the
+  same reviewed, green diff and hit the same refusal, looping without ever
+  reaching a human or a merged PR. The work is now recut onto a fresh,
+  never-pushed branch name at the already-reviewed sha, which is trivially a
+  fast-forward.
+- **The tamper guard reported a fake fixture that did not exist** — a file with
+  one autouse fixture that patched nothing, plus ordinary per-test `monkeypatch`
+  arguments elsewhere, was read as "the fixture did the patching" and flagged as
+  tampered. A patch is now attributed to the scope that actually performs it, and
+  a skip marker inside a string literal is no longer counted as a real skip; a
+  genuine autouse-fixture cheat is still caught.
+- **The replay leak harness could pass for the wrong reason** — its gzip decode
+  path could silently degrade while the leak checks kept passing against a
+  haystack that never inflated. It now gates on its own decompression health and
+  carries a DOM-only positive control, replacing an unenforced INFO line with
+  real assertions.
+- **A scheduler crash recorded no traceback** — the one event that needs it kept
+  only a message, so a pool crash left nothing to diagnose. The traceback is now
+  captured on the crash event under the same excerpt cap as the existing stderr
+  excerpt, so one runaway trace cannot balloon the durable row.
+- **The scoping grill re-asked a question the user had already answered** —
+  including rewordings and narrowed variants seeking the same decision, spending
+  one of the user's limited intake rounds and reading as though their answer had
+  been ignored. An answer that declines to specify is now treated as a stop
+  signal rather than an invitation to rephrase.
+- **The P1 history gate's hit count is now readable** — the full-history scan
+  reported its blob hits behind two independent truncations (a 200-per-group
+  print cap and a 600-character hook log), so nobody could separate genuine leaks
+  from broad-shape matches against contributor identities and test fixtures;
+  `scripts/history_gate_hit_report.py` classifies them.
 
 ## [0.2.3] — 2026-09-14
 

@@ -162,7 +162,7 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1262`, `:GitRepo.fetch:1598`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1277`, `:GitRepo.fetch:1657`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
@@ -336,7 +336,7 @@ named here.
 - **The desktop app checks GitHub Releases at startup**, once a day
   (`desktop/main.mjs:270` → `desktop/updater.mjs:116`, called at startup from
   `desktop/main.mjs:1141`, feed `provider: github, owner: no-human-ai, repo:
-  no_human` — `desktop/electron-builder.config.cjs:438`). It never downloads on its own
+  no_human` — `desktop/electron-builder.config.cjs:457`). It never downloads on its own
   (`autoDownload` is off, `desktop/updater.mjs:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
   `updates.enabled` exists in `desktop/` — those switches do not reach it.**
@@ -461,6 +461,16 @@ config key that turns it on and the default that keeps it off.
   never blocks or fails the onboarding response, and neither the address nor
   any exception detail is logged or returned — only a closed-vocabulary
   status string.
+- **The `no_human` review-gate GitHub Action.** This sends nothing on its own —
+  it is a separate, opt-in distribution surface (`action.yml`) that only runs
+  inside a workflow a repository's own maintainers add, and only on that
+  repository's `pull_request` jobs. Once added, the sole outbound call is a
+  read/create/update of the Action's own single PR comment against your
+  GitHub (or GHE) host's REST API — never a merge, review, push, or any other
+  endpoint, which `_assert_write_allowed` enforces in code
+  (`ci_action/github.py`). Model calls go out on the `credential` input you
+  supply to the job, exactly like any other coder/reviewer session in this
+  document.
 - **Welcome email (Resend).** Gated on an **environment variable**, not a
   config key: `_default_transport()` (`email/send.py`) constructs a
   `ResendTransport` only when `RESEND_API_KEY` is present in

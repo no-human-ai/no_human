@@ -171,3 +171,400 @@ def test_check_mode_is_clean_on_this_tree():
     assert result.returncode == 0, result.stdout + result.stderr
     assert "VERDICT=OK" in result.stdout
     assert before == after, "--check must never modify a file"
+
+
+def test_apply_diagnoses_pre_existing_divergence(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_path.write_text("See `widget.py:bench_run:8217` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    drift = ra.Drift(doc="fake.md", old_raw="widget.py:bench_run:8213", new_raw="widget.py:bench_run:8220", resolve_path="widget.py")
+
+    texts, unresolved = ra._apply_all(fake_mod, [drift])
+
+    assert texts is None
+    assert len(unresolved) == 1
+    assert "Citation is already divergent" in unresolved[0].reason
+    assert "documentation: `widget.py:bench_run:8217`" in unresolved[0].reason
+    assert "table:         `widget.py:bench_run:8213`" in unresolved[0].reason
+    assert "source:        `widget.py:bench_run:8220`" in unresolved[0].reason
+    assert "Use `--reconcile`" in unresolved[0].reason
+
+    assert "8220" not in doc_path.read_text(encoding="utf-8")
+    assert "8220" not in table_path.read_text(encoding="utf-8")
+
+def test_reconcile_converges_diverged_symbol_citation(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_path.write_text("See `widget.py:bench_run:8217` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw="widget.py:bench_run:8213",
+        stable_prefix="widget.py:bench_run", new_raw="widget.py:bench_run:8220",
+        resolve_path="widget.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None
+    assert not unresolved
+    assert total_changed > 0
+    assert "8220" in texts[doc_path]
+    assert "8217" not in texts[doc_path]
+    assert "8220" in texts[table_path]
+    assert "8213" not in texts[table_path]
+
+def test_reconcile_is_idempotent(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_path.write_text("See `widget.py:bench_run:8220` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:8220", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw="widget.py:bench_run:8220",
+        stable_prefix="widget.py:bench_run", new_raw="widget.py:bench_run:8220",
+        resolve_path="widget.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None
+    assert not unresolved
+    assert total_changed == 0
+
+def test_reconcile_refuses_legacy_line_citations():
+    fake_mod = types.SimpleNamespace(
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+    rows = [("fake.md", "widget.py:5", "widget.py", "token")]
+    recons, unfixable = ra.reconcile_plan(fake_mod, rows)
+    assert not recons
+    assert len(unfixable) == 1
+    assert "no stable symbol identity" in unfixable[0].reason
+
+def test_reconcile_refuses_duplicate_prefix(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_path.write_text("See `widget.py:bench_run:10` and `widget.py:bench_run:20`\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:15", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw="widget.py:bench_run:15",
+        stable_prefix="widget.py:bench_run", new_raw="widget.py:bench_run:8220",
+        resolve_path="widget.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is None
+    assert len(unresolved) == 1
+    assert "does not occur exactly once" in unresolved[0].reason
+
+def test_reconcile_converges_multi_citation_per_symbol(tmp_path, monkeypatch):
+    """Pin the exact shape from eval.md where one symbol is cited multiple
+    times in the same document (one qualified, two shorthand).
+    Exact matching the citation string avoids the 'does not occur exactly once'
+    error that a naive symbol-only substring search would trip on."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_text = (
+        "Here are three citations for the same symbol:\n"
+        "`src/no_human/cli/commands.py:bench_run:8255`\n"
+        "`:bench_run:8406`\n"
+        "`:bench_run:8284`\n"
+    )
+    doc_path.write_text(doc_text, encoding="utf-8")
+    table_text = (
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", ":bench_run:8406", "src/no_human/cli/commands.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n'
+    )
+    table_path.write_text(table_text, encoding="utf-8")
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw=":bench_run:8406",
+        stable_prefix=":bench_run", new_raw=":bench_run:9000",
+        resolve_path="src/no_human/cli/commands.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None, f"Expected successful rewrite, got unresolved: {unresolved}"
+    assert len(unresolved) == 0
+    assert total_changed == 1
+
+    # Verify the document replaced only the target citation
+    new_doc = texts[doc_path]
+    assert "`src/no_human/cli/commands.py:bench_run:8255`" in new_doc
+    assert "`:bench_run:9000`" in new_doc
+    assert "`:bench_run:8284`" in new_doc
+    assert "`:bench_run:8406`" not in new_doc
+
+    # Verify the table row was rewritten
+    new_table = texts[table_path]
+    assert '":bench_run:9000"' in new_table
+    assert '":bench_run:8406"' not in new_table
+
+def test_reconcile_preserves_single_symbol_in_new_raw(tmp_path, monkeypatch):
+    """Pin the exact shape of a fully qualified symbol-backed citation to ensure
+    reconciliation does not duplicate the symbol in the new citation string."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_text = "See `cli/commands.py:merge_stack_run:3206`\n"
+    doc_path.write_text(doc_text, encoding="utf-8")
+    table_text = (
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "cli/commands.py:merge_stack_run:3206", "cli/commands.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n'
+    )
+    table_path.write_text(table_text, encoding="utf-8")
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw="cli/commands.py:merge_stack_run:3206",
+        stable_prefix="cli/commands.py:merge_stack_run", new_raw="cli/commands.py:merge_stack_run:9000",
+        resolve_path="cli/commands.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None, f"Expected successful rewrite, got unresolved: {unresolved}"
+    assert len(unresolved) == 0
+    assert total_changed == 1
+
+    new_doc = texts[doc_path]
+    # Assert exact expected string
+    assert "`cli/commands.py:merge_stack_run:9000`" in new_doc
+    # Assert explicitly that the duplicated symbol does NOT occur
+    assert "`cli/commands.py:merge_stack_run:merge_stack_run:" not in new_doc
+
+def test_main_reconcile_reports_only_modified_files(tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    resolve_path = tmp_path / "widget.py"
+
+    doc_path.write_text("See `widget.py:bench_run:8217` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    resolve_path.write_text("def bench_run():\n    pass # token\n", encoding="utf-8")
+
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: 8213,
+        _resolve_source=lambda path: [resolve_path],
+        _token_line_in_symbol=lambda text, sym, tok: 2,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 0
+
+    stdout = capsys.readouterr().out
+    assert "Reconciled 1 citation(s)." in stdout
+    assert "Modified:" in stdout
+    # Both doc and table changed
+    assert "tests/test_readme_claims.py" in stdout
+    assert "docs/fake.md" in stdout
+
+def test_main_reconcile_reports_no_modified_files_when_zero_changes(tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    resolve_path = tmp_path / "widget.py"
+
+    doc_path.write_text("See `widget.py:bench_run:2` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:2", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    resolve_path.write_text("def bench_run():\n    pass # token\n", encoding="utf-8")
+
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fake.md", "widget.py:bench_run:2", "widget.py", "token"),
+            ("fake.md", "legacy:5", "legacy", "token"),
+        ),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: 2,
+        _resolve_source=lambda path: [resolve_path],
+        _token_line_in_symbol=lambda text, sym, tok: 2,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Reconciled 0 citation(s)." in stdout
+    assert "Modified:" not in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+
+
+# --------------------------------------------------------------------------- #
+# `--apply` actually reaching the filesystem.                                 #
+#                                                                             #
+# Everything above drives `_apply_all`, which returns a {path: new_text} dict  #
+# and touches nothing. The one line that turns that dict into bytes on disk    #
+# lives in `main()`, and nothing observed it: replacing it with `pass` left    #
+# every test in this file green. So the wiring between "computed the new       #
+# text" and "the file now holds it" was uncovered, which is the seam that      #
+# matters — a helper that computes a perfect rewrite and never writes it is    #
+# indistinguishable from a working one at the level of a returned dict.        #
+# --------------------------------------------------------------------------- #
+
+def _drift_fixture(tmp_path: Path):
+    """A repo shaped like the real one, with exactly one drifted citation."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    doc_path.write_text("See `widget.py:5` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:5", "widget.py", "line 5"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    return doc_path, table_path
+
+
+def test_apply_writes_the_rewritten_text_to_disk(tmp_path, monkeypatch):
+    """The artifact, not the return value: after `--apply`, read the files."""
+    doc_path, table_path = _drift_fixture(tmp_path)
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        CITATION_TABLE=(("fake.md", "widget.py:5", "widget.py", "line 5"),),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+    monkeypatch.setattr(ra, "plan", lambda mod, table: (
+        [ra.Drift(doc="fake.md", old_raw="widget.py:5", new_raw="widget.py:8",
+                  resolve_path="widget.py")], []))
+
+    assert ra.main(["--apply"]) == 0
+
+    assert doc_path.read_text(encoding="utf-8") == "See `widget.py:8` for details.\n"
+    assert '"widget.py:8"' in table_path.read_text(encoding="utf-8")
+
+
+def test_apply_writes_lf_bytes_and_no_bom(tmp_path, monkeypatch):
+    """Written as bytes so the platform's text layer never decides.
+
+    On Windows a text-layer write turns every line of a rewritten doc into
+    CRLF, and a four-citation change lands as a whole-file diff.
+    """
+    doc_path, _table_path = _drift_fixture(tmp_path)
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        CITATION_TABLE=(("fake.md", "widget.py:5", "widget.py", "line 5"),),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+    monkeypatch.setattr(ra, "plan", lambda mod, table: (
+        [ra.Drift(doc="fake.md", old_raw="widget.py:5", new_raw="widget.py:8",
+                  resolve_path="widget.py")], []))
+
+    # Assert the run succeeded and the content actually changed before asking
+    # about its bytes: without these two, every assertion below is satisfied by
+    # the untouched fixture, and the test passes when the write is deleted.
+    assert ra.main(["--apply"]) == 0
+
+    written = doc_path.read_bytes()
+    assert b"widget.py:8" in written
+    assert b"\r" not in written
+    assert not written.startswith(b"\xef\xbb\xbf")
+    assert written.endswith(b"\n")
