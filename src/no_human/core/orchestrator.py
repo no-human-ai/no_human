@@ -619,10 +619,10 @@ def _summarize_tool_sig(tool: str, inp: dict) -> str:
 #: whose runner is a harness script read as making no progress to whichever
 #: guard still used the narrower set, so it was collapsed into this one.
 #: This is the closest cheap proxy the live event stream has for "a test
-#: result appeared": `tool_result` events never carry output text
+#: result appeared": a `tool_result`'s meta never carries output text
 #: (`claude_backend._exit_status`'s docstring — only size, and an exit code
-#: on failure, by design), so whether the run PASSED cannot be read from the
-#: stream at all. Running one of these commands is itself evidence the
+#: on failure, by design; `AgentEvent.output` is in-process, read only by the
+#: reviewer's coverage tracker), so PASSED is not read here. Running one is evidence the
 #: attempt is verifying, not just looking around.
 #:
 #: `node <script>` (task 0ab78498 attempt 1/2: `node /tmp/dcrace/harness.mjs`;
@@ -698,8 +698,8 @@ def _looks_like_test_run(command: str) -> bool:
 def _test_run_summary(meta: dict | None) -> str:
     """A human-readable, comparable outcome for one test-runner invocation.
 
-    Rendered from `tool_result` meta ALONE — the SDK never delivers output
-    text on the wire (`claude_backend._exit_status`'s docstring, by design,
+    Rendered from `tool_result` meta ALONE — output text never enters meta
+    (`claude_backend._exit_status`'s docstring, by design,
     so a printed credential is never captured): `exit_code` when a FAILED
     result states one, else ``ok``/``failed`` from `is_error`, plus
     `result_chars`. Two test-runner calls with the SAME outcome produce a
