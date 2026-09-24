@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `4e90a4f5`, commit `0ab2f840a0e132ceae8e4c199d738220960bfe4b` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4e90a4f5`, commit `644227b25348dd5365870203bd04f37f1ebf19cd` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All added/modified test functions (test_cell_*, test_render_body_*, test_mention_*, test_second_run_*, test_first_run_*, test_dry_run_*, test_post_failure_*, test_step_summary_*, test_note_and_model_*, test_duplicate_hazard_*, etc.) contain at least one assert, pytest.raises, or AssertionError. The modified _event and _render are helpers, not test functions.",
-    "evidence": "Every added test function contains assertions, e.g. test_mention_is_omitted_for_unmentionable_logins has 'assert \"@\" not in body', and test_mention_for_grammar has 'assert result == f\"@{login}\"'.",
+    "comment": "All added/modified test functions (test_cell_escapes_at_signs..., the render_body/mention suite, the parametrized login tests, and the upsert/summary tests) each contain at least one assert or pytest.raises; the only non-asserting additions are helpers (_event, _render), which are not test functions.",
+    "evidence": "Every added test function contains assert statements, e.g. test_mention_for_grammar ends with `assert result == f\"@{login}\"` / `assert result == \"\"`, and test_missing_user_object_still_posts_without_a_mention ends with `assert \"@\" not in bodies[0][\"body\"]`.",
     "file": "",
     "files_checked": [
       "tests/test_ci_action.py"
@@ -15,7 +15,7 @@ _Harness-captured record for task `4e90a4f5`, commit `0ab2f840a0e132ceae8e4c199d
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1048,
+    "tokens_used": 1206,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   }
