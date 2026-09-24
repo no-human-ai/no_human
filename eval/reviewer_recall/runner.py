@@ -49,6 +49,14 @@ class HeadlineRefusedError(RuntimeError):
     misleading number."""
 
 
+class InstrumentInvalidError(HeadlineRefusedError):
+    """The count of clean controls that drew a blocking finding exceeds half
+    the seeded-case count: a reviewer that flags (nearly) every diff "catches"
+    every defect, so the recall headline would measure nothing. A subclass of
+    :class:`HeadlineRefusedError` so ``nh bench report`` prints it as the same
+    clean refusal instead of a traceback."""
+
+
 class TranscriptOverwriteRefused(RuntimeError):
     """``runs/<date>/`` already holds transcripts and ``overwrite=`` was not
     given.
@@ -146,6 +154,7 @@ class RecallReport:
     results: list[CaseResult]
     model: str
     run_date: str
+    mode: str = "diff-only"  # "diff-only" | "gate" (issue #436)
     method_doc: str = METHOD_DOC
 
 
@@ -215,11 +224,12 @@ def prepare_case_repo(repo_root: Path, case: CaseSpec, workdir: Path) -> Path:
     only the single ``base`` commit this function creates.
 
     Only the files the diff touches are materialised. That is the whole set the
-    scratch repo is ever read for: the recall runner calls the reviewer with
-    ``diff_override``, which puts it on the single-turn no-tools path
-    (``reviewer.py``, gate mode), so the tree is consulted only by
-    ``_verify_citations``. See the README for the one behavioural delta this
-    implies.
+    scratch repo is ever read for in diff-only mode: the recall runner calls
+    the reviewer with ``diff_override``, which puts it on the single-turn
+    no-tools path (``reviewer.py``, gate mode), so the tree is consulted only
+    by ``_verify_citations``. See the README for the one behavioural delta this
+    implies. ``--mode gate`` (:func:`_gate_reviewer_fn`) commits the applied
+    change as ``head`` and gives the reviewer read tools over this same tree.
     """
     base_src = case.dir / BASE_DIR_NAME
     target = workdir / case.case_id
@@ -379,6 +389,68 @@ async def run_case(
     return score_case(case, outcome)
 
 
+def _gate_reviewer_fn(model: str, config_data: dict[str, Any] | None = None) -> ReviewerFn:
+    """The shipping gate, not the diff-only probe (issue #436).
+
+    Builds the reviewer through ``AdversarialReviewer.from_config`` — the
+    factory ``core/runtime.build_orchestrator`` uses — so the configured
+    reviewer backend (``llm.role_backends.reviewer``) is honoured, and calls
+    ``review()`` WITHOUT ``diff_override`` so it takes the refs path: the
+    multi-turn read-only session plus the lint/wiring/type evidence sections.
+
+    ``config_data`` is passed EXPLICITLY (the CLI hands in the config it
+    already loaded). Nothing here touches ``os.environ`` or copies a file out
+    of ``~/.no_human``: the case repo is a temp dir outside the checkout that
+    holds only the diff's files, so it contains no case file (``truth.json``
+    included). The reviewer's read-only tools are not path-contained, so the
+    checkout itself stays readable by absolute path. ``model`` is unused — in
+    gate mode the model is whatever the factory resolves from ``config_data``.
+    """
+    del model
+
+    async def _fn(repo_path: Path, diff_text: str, case: CaseSpec) -> ReviewOutcome:
+        from no_human.config import load_config
+        from no_human.core.task import Task
+        from no_human.review.reviewer import AdversarialReviewer
+
+        data = (config_data if config_data is not None
+                else load_config(create_if_missing=False).data)
+        # prepare_case_repo left the change applied but uncommitted; commit it
+        # so the scratch repo holds exactly two commits, base and head.
+        _run(["git", "add", "-A"], cwd=repo_path)
+        _run(["git", "-c", "user.email=reviewer-recall@no-human.local",
+              "-c", "user.name=reviewer-recall", "commit", "-q", "-m", "head",
+              "--allow-empty"], cwd=repo_path)
+        reviewer = AdversarialReviewer.from_config(data)
+        task = Task.new(f"reviewer-recall probe: {case.case_id}",
+                        repo_path=str(repo_path),
+                        description=case.request or None)
+        decision = await reviewer.review(task, repo_path=repo_path,
+                                         before_ref="HEAD~1", after_ref="HEAD")
+        return _outcome_from_decision(decision)
+
+    return _fn
+
+
+def _outcome_from_decision(decision: Any) -> ReviewOutcome:
+    blocking_ids = {id(item) for item in decision.blocking_items}
+    findings = [
+        Finding(file=item.file or "", line=item.line or 0,
+                text=f"{item.label}: {item.comment or item.evidence}",
+                blocking=id(item) in blocking_ids)
+        for item in decision.failed_items
+    ]
+    return ReviewOutcome(
+        status="PASS" if decision.passed else "FAIL",
+        findings=findings,
+        # Kept, not discarded: with only the diff's files in the scratch
+        # repo, a demotion here is what turns a control's false alarm into
+        # a "clean pass".
+        demoted_citations=list(decision.demoted_citations),
+        goal=getattr(decision, "goal", None),
+    )
+
+
 def _default_reviewer_fn(model: str) -> ReviewerFn:
     """Wraps the existing fresh-context reviewer (no_human.review.reviewer)."""
 
@@ -397,22 +469,7 @@ def _default_reviewer_fn(model: str) -> ReviewerFn:
         reviewer = AdversarialReviewer(model=model)
         decision = await reviewer.review(task, repo_path=repo_path,
                                          diff_override=diff_text, before_ref="HEAD")
-        blocking_ids = {id(item) for item in decision.blocking_items}
-        findings = [
-            Finding(file=item.file or "", line=item.line or 0,
-                    text=f"{item.label}: {item.comment or item.evidence}",
-                    blocking=id(item) in blocking_ids)
-            for item in decision.failed_items
-        ]
-        return ReviewOutcome(
-            status="PASS" if decision.passed else "FAIL",
-            findings=findings,
-            # Kept, not discarded: with only the diff's files in the scratch
-            # repo, a demotion here is what turns a control's false alarm into
-            # a "clean pass".
-            demoted_citations=list(decision.demoted_citations),
-            goal=getattr(decision, "goal", None),
-        )
+        return _outcome_from_decision(decision)
 
     return _fn
 
@@ -423,20 +480,36 @@ async def run_all(
     cases_dir: Path = CASES_DIR,
     reviewer_fn: ReviewerFn | None = None,
     model: str,
+    mode: str = "diff-only",
+    config_data: dict[str, Any] | None = None,
     run_date: str | None = None,
     runs_dir: Path = RUNS_DIR,
     overwrite: bool = False,
 ) -> RecallReport:
     run_date = run_date or _today()
     _assert_runs_dir_writable(runs_dir, run_date, overwrite)
-    fn = reviewer_fn or _default_reviewer_fn(model)
+    if mode not in ("diff-only", "gate"):
+        raise ValueError(f"unknown reviewer-recall mode {mode!r}")
+    if mode == "gate" and reviewer_fn is None:
+        from no_human.agent.backend import explicit_role_backend
+        from no_human.config import load_config
+
+        if config_data is None:
+            config_data = load_config(create_if_missing=False).data
+        # A non-default reviewer backend is disclosed wherever the run's
+        # model is shown (constraint #6, §6d) — the report's model line.
+        entry = explicit_role_backend(config_data, "reviewer")
+        if entry:
+            model = f"{entry['model']} on {entry['backend']} (non-default reviewer)"
+    fn = reviewer_fn or (_gate_reviewer_fn(model, config_data) if mode == "gate"
+                         else _default_reviewer_fn(model))
     cases = load_cases(cases_dir)
     results: list[CaseResult] = []
     with tempfile.TemporaryDirectory(prefix="nh-reviewer-recall-") as tmp:
         workdir = Path(tmp)
         for case in cases:
             results.append(await run_case(repo_root, case, fn, workdir))
-    report = RecallReport(results=results, model=model, run_date=run_date)
+    report = RecallReport(results=results, model=model, run_date=run_date, mode=mode)
     write_transcripts(report, runs_dir, overwrite=overwrite)
     return report
 
@@ -559,6 +632,14 @@ def render_report(report: RecallReport) -> str:
     class_suffix = f"  [{class_parts}]" if class_parts else ""
 
     clean = sum(1 for r in controls if r.clean_pass)
+    false_alarms = len(controls) - clean
+    if false_alarms > total / 2:
+        raise InstrumentInvalidError(
+            f"instrument invalid: {false_alarms} of {len(controls)} clean "
+            f"controls drew a blocking finding, more than half the {total} "
+            "seeded cases — a reviewer that flags nearly every diff makes the "
+            "recall number meaningless"
+        )
 
     lines = [
         f"reviewer recall: {caught}/{total}{pct}{class_suffix}",
@@ -582,7 +663,7 @@ def render_report(report: RecallReport) -> str:
                 lines.append(f"      {r.case_id}: {d}")
 
     lines.append(
-        f"model: {report.model} · run date: {report.run_date} · "
+        f"model: {report.model} ({report.mode} mode) · run date: {report.run_date} · "
         f"method: {report.method_doc}"
     )
     return "\n".join(lines)
@@ -593,6 +674,8 @@ def run_and_report(
     *,
     reviewer_fn: ReviewerFn | None = None,
     model: str,
+    mode: str = "diff-only",
+    config_data: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> str:
     """CLI entry point: `nh bench report --reviewer-recall` calls this.
@@ -602,5 +685,6 @@ def run_and_report(
     """
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
     report = asyncio.run(run_all(root, reviewer_fn=reviewer_fn, model=model,
-                                 overwrite=overwrite))
+                                 overwrite=overwrite, mode=mode,
+                                 config_data=config_data))
     return render_report(report)

@@ -795,7 +795,7 @@ async def test_stream_reports_tool_result_SIZE_from_the_user_message(tmp_path, m
     attempts against 1,497 tool_use, and the `_TOOL_RESULT_CAP` truncation a
     previous author wrote never executed once.
 
-    The SIZE is emitted, never the text: 72% of an attempt's cost is the
+    The SIZE is persisted, never the text: 72% of an attempt's cost is the
     conversation re-read every turn and tool results are the payload, so the size
     distribution is what a truncation threshold must be chosen from — while
     persisting the text would bloat the DB and could capture whatever a command

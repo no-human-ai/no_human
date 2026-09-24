@@ -1221,6 +1221,16 @@ def test_one_patch_touching_several_files_is_several_guard_checks(monkeypatch):
     assert sorted(paths) == ["src/a.py", "src/b.py", "src/c.py"]
 
 
+def test_a_command_result_carries_its_output_in_process(monkeypatch):
+    """`AgentEvent.output` is what lets the reviewer's coverage tracker see a
+    directory listing; the persisting sinks never copy it."""
+    events: list[AgentEvent] = []
+    _run(cx.CodexBackend(env=FAKE_ENV), monkeypatch, _HAPPY,
+         on_event=events.append)
+    outputs = [e.output for e in events if e.kind == "tool_result"]
+    assert "5 passed" in outputs
+
+
 def test_output_tokens_stays_null_when_no_usage_was_ever_reported(monkeypatch):
     """0 asserts "this run emitted no output"; None says "never reported". The
     distinction is load-bearing all the way to the DB column."""

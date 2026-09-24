@@ -1491,7 +1491,7 @@ class CodexBackend:
                 out = item.get("aggregated_output") or item.get("output") or ""
                 text = out if isinstance(out, str) else json.dumps(out)
                 events.append(AgentEvent(
-                    "tool_result",
+                    "tool_result", output=text,
                     meta={
                         "tool_use_id": item_id,
                         "parent_tool_use_id": None,
