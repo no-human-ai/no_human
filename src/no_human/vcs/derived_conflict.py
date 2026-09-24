@@ -866,10 +866,10 @@ def _take_budget_hunks(worktree_path: Path, branch_tip_sha: str,
         ), []
     # "ours" (the branch tip, pre-merge) is what `load_scanner` falls back to
     # reading the scanner's own code from when
-    # `src/no_human/testing/structural_budget.py` does not exist yet (the
-    # scanner still lives inside the test file itself) — read it via
-    # `git show` rather than the worktree path, which is about to be
-    # overwritten below.
+    # `src/no_human/testing/structural_budget.py` does not yet define
+    # `scan_tree` — a legacy branch tip predating the scanner's move into
+    # that module — read it via `git show` rather than the worktree path,
+    # which is about to be overwritten below.
     ours_proc = _sh(["git", "show", f"{branch_tip_sha}:{BUDGET_TEST_PATH}"],
                     cwd=worktree_path)
     ours_blob_text = ours_proc.stdout if ours_proc.returncode == 0 else ""

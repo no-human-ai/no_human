@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from no_human.vcs import budget_conflict
@@ -28,6 +29,8 @@ from no_human.vcs.budget_conflict import (
     resolve_hunks,
     run_budget_test,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _KEY = "core/orchestrator.py:Orchestrator._run_attempt"
 
@@ -246,6 +249,92 @@ def test_no_scanner_at_all_names_both_attempts(tmp_path):
     assert mod is None
     assert str(real_path) in reason
     assert "scan_tree" in reason
+
+
+# --------------------------------------------------------------------------- #
+# Bugfix regression: `scan_source`/`scan_tree` moved from
+# `tests/test_structural_budget.py` into `src/no_human/testing/structural_budget.py`
+# so `load_scanner`'s PREFERRED branch (the real module) actually succeeds on
+# a normal worktree, instead of always falling through to exec-ing "ours"'s
+# copy of the test file -- which does `import pytest` at module level and so
+# requires pytest importable in the resolver's OWN process. These tests use
+# the real repo files (not the hand-built fakes above) to prove the fix
+# against the actual shipped scanner, not a stand-in.
+# --------------------------------------------------------------------------- #
+
+_REAL_SCANNER_TEXT = (
+    REPO_ROOT / "src" / "no_human" / "testing" / "structural_budget.py"
+).read_text(encoding="utf-8")
+_REAL_GUARD_TEXT = (REPO_ROOT / "tests" / "test_structural_budget.py").read_text(
+    encoding="utf-8"
+)
+
+
+@contextmanager
+def _no_pytest():
+    """Makes `import pytest` fail with `ModuleNotFoundError` for the
+    duration of the `with` block, simulating a resolver process that has no
+    pytest installed. Pops `"pytest"` out of `sys.modules` too -- without
+    that, the import is already cached and the inserted finder is never
+    consulted, so the test would pass vacuously regardless of the fix."""
+
+    class _BlockPytest:
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "pytest":
+                raise ModuleNotFoundError("No module named 'pytest'")
+            return None
+
+    saved_pytest = sys.modules.pop("pytest", None)
+    sys.meta_path.insert(0, _BlockPytest())
+    try:
+        yield
+    finally:
+        sys.meta_path.pop(0)
+        if saved_pytest is not None:
+            sys.modules["pytest"] = saved_pytest
+
+
+def test_load_scanner_returns_the_production_module_on_a_main_shaped_worktree(tmp_path):
+    wt = _fake_worktree(tmp_path, real_body=_REAL_SCANNER_TEXT)
+    mod, reason = load_scanner(str(wt), _REAL_GUARD_TEXT)
+
+    assert reason == ""
+    # Identified positively by attributes only the PRODUCTION module carries
+    # -- never "no error was raised".
+    assert mod.GUARD_RELPATH == "tests/test_structural_budget.py"
+    assert hasattr(mod, "frozen_paths")
+    # The ours-blob copy of tests/test_structural_budget.py WOULD carry the
+    # FROZEN_* ledgers; the production module never does.
+    assert not hasattr(mod, "FROZEN_FUNCTION_LINES")
+    # __file__ is under the worktree, not a throwaway temp .py.
+    real_path = wt / "src" / "no_human" / "testing" / "structural_budget.py"
+    assert Path(mod.__file__) == real_path
+
+
+def test_load_scanner_does_not_need_pytest_in_its_own_process(tmp_path):
+    wt_main_shaped = _fake_worktree(tmp_path / "main_shaped", real_body=_REAL_SCANNER_TEXT)
+    # No `src/no_human/testing/structural_budget.py` at all -- the pre-fix
+    # shape, where `load_scanner` always fell through to exec-ing "ours"'s
+    # `import pytest`-laden copy of the test file.
+    wt_legacy = _fake_worktree(tmp_path / "legacy")
+
+    with _no_pytest():
+        mod, reason = load_scanner(str(wt_main_shaped), _REAL_GUARD_TEXT)
+        # POSITIVE CONTROL: this is the line that FAILS if the fix is
+        # reverted (i.e. if `scan_tree` still lived only in the test file) --
+        # proving the assertions above are not vacuously true. With no
+        # production scanner to prefer, `load_scanner` falls back to the
+        # ours-blob path, which requires pytest and so fails here.
+        legacy_mod, legacy_reason = load_scanner(str(wt_legacy), _REAL_GUARD_TEXT)
+    # All assertions run after the context manager has restored
+    # sys.meta_path/sys.modules.
+
+    assert reason == ""
+    assert hasattr(mod, "scan_tree")
+    assert mod.GUARD_RELPATH == "tests/test_structural_budget.py"
+
+    assert legacy_mod is None
+    assert "pytest" in legacy_reason
 
 
 # --- run_budget_test: must resolve its interpreter through `proc.real_python` -

@@ -407,7 +407,11 @@ longer than 2,500 lines. It fails if a new offender appears outside the
 freeze, if a frozen entry grows past its frozen value, or if a frozen entry
 shrinks below its threshold (or its symbol disappears) without being deleted
 from the allow-list — the budget can only move down. It is a size ratchet,
-not a design review or a lint config, and adds no dependency.
+not a design review or a lint config, and adds no dependency. The scanner
+implementation lives in
+[`src/no_human/testing/structural_budget.py`](../src/no_human/testing/structural_budget.py)
+(so the mechanical PR-conflict resolver can load it without executing a test
+file); the guard file above holds the frozen ledgers and the tests.
 
 ## A preflight that catches citation drift before review, not after
 

@@ -21,12 +21,39 @@ the guard's own growth test — consumed by
 FAIL-OPEN, ALWAYS: absent, unreadable, or unparseable guard ⇒ `set()`,
 never a raise. Every repo without this guard — the overwhelming majority of
 target repos — must pay nothing for it.
+
+THE SECOND HALF OF THIS MODULE — `scan_source`/`scan_tree` (plus `Entry`,
+`_cyclomatic`, `_walk_defs`) — is the guard's OWN scanner, moved here from
+`tests/test_structural_budget.py` (which now imports them from here instead
+of defining its own copies). It has to live in production code, not in a
+test file, because `src/no_human/vcs/budget_conflict.py::load_scanner` — the
+mechanical resolver for a `FROZEN_*` merge conflict — loads it in-process to
+re-measure the merged tree. Before this move, `load_scanner`'s preferred
+branch could never succeed (this module never defined `scan_tree`), so every
+resolution fell through to exec-ing a throwaway copy of the ENTIRE test file
+by path — including its module-level `import pytest` — which fails outright
+in any resolver process that has no pytest installed. That half is NOT
+fail-open: `scan_source`/`scan_tree` let a `SyntaxError` propagate (with
+`filename=` set to the offending path) rather than swallow it, by design —
+a file the scanner cannot parse must fail loudly, not vanish from the
+measured tree. It does not contradict the fail-open doctrine above; the two
+halves answer different questions ("is there a guard to read at all" versus
+"what does the guard measure once we know it exists").
+
+STDLIB-ONLY, STANDALONE-EXEC-ABLE: `budget_conflict._load_module_from_path`
+execs this file directly via `importlib.util.spec_from_file_location`, by
+path, OUTSIDE the `no_human` package — so this module must never import
+anything beyond the standard library, and never a package-relative name
+(`from . import x` / `from ..x import y`). A third-party or relative import
+here would break `load_scanner`'s preferred branch exactly the way the
+`import pytest` it replaces used to.
 """
 
 from __future__ import annotations
 
 import ast
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 
 #: The guard file this module knows how to read, repo-relative.
@@ -230,3 +257,90 @@ def invalidate_guard_cache(repo_path: Path) -> None:
             pyc.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# ── the scanner itself (moved from tests/test_structural_budget.py) ────── #
+
+MAX_FUNCTION_LINES = 300
+MAX_FUNCTION_CC = 60
+MAX_FILE_LINES = 2500
+
+
+@dataclass(frozen=True)
+class Entry:
+    key: str
+    lines: int
+    cc: int
+
+
+def _cyclomatic(fn: ast.AST) -> int:
+    """Cyclomatic complexity estimate for a function node. See module
+    docstring for the exact formula; `AsyncWith` is deliberately excluded."""
+    cc = 1
+    for node in ast.walk(fn):
+        if isinstance(
+            node,
+            (
+                ast.If,
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.ExceptHandler,
+                ast.With,
+                ast.IfExp,
+                ast.match_case,
+            ),
+        ):
+            cc += 1
+        elif isinstance(node, ast.BoolOp):
+            cc += len(node.values) - 1
+        elif isinstance(node, ast.comprehension):
+            cc += len(node.ifs)
+    return cc
+
+
+def _walk_defs(node: ast.AST, prefix: str, path_key: str, out: list[Entry]) -> None:
+    """Explicit recursive descent through ClassDef/FunctionDef/AsyncFunctionDef,
+    building dotted qualnames. NOT `ast.walk` — that loses nesting and would
+    collide e.g. two different classes' `_run` methods under one key."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.ClassDef):
+            _walk_defs(child, f"{prefix}{child.name}.", path_key, out)
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualname = f"{prefix}{child.name}"
+            lines = child.end_lineno - child.lineno + 1
+            out.append(Entry(f"{path_key}:{qualname}", lines, _cyclomatic(child)))
+            _walk_defs(child, f"{qualname}.", path_key, out)
+
+
+def scan_source(text: str, path: str) -> tuple[list[Entry], int]:
+    """Parse `text` (as if it were `path`) and return (every function Entry,
+    total line count of the file). Unfiltered — callers apply thresholds."""
+    tree = ast.parse(text, filename=path)
+    entries: list[Entry] = []
+    _walk_defs(tree, "", path, entries)
+    return entries, len(text.splitlines())
+
+
+def scan_tree(root: Path) -> tuple[dict[str, int], dict[str, int], dict[str, int], int, int]:
+    """Walk every `*.py` under `root` once. Returns three dicts of only the
+    OFFENDING entries (over their respective threshold) — function line
+    counts, function cc, file line counts — plus (total files scanned, total
+    functions scanned) for the fail-closed floor check."""
+    function_lines: dict[str, int] = {}
+    function_cc: dict[str, int] = {}
+    file_lines: dict[str, int] = {}
+    total_functions = 0
+    files = sorted(root.rglob("*.py"))
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        entries, lines = scan_source(path.read_text(encoding="utf-8"), rel)
+        total_functions += len(entries)
+        if lines > MAX_FILE_LINES:
+            file_lines[rel] = lines
+        for entry in entries:
+            if entry.lines > MAX_FUNCTION_LINES:
+                function_lines[entry.key] = entry.lines
+            if entry.cc > MAX_FUNCTION_CC:
+                function_cc[entry.key] = entry.cc
+    return function_lines, function_cc, file_lines, len(files), total_functions
