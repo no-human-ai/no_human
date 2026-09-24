@@ -4,7 +4,7 @@
 sandboxed repo. This module does something narrower and cheaper: it takes
 the event stream a PAST attempt already produced — persisted verbatim in
 `task_events` while the attempt ran — and replays it through today's
-`StuckDetector`/`drive_stuck_detector` (`..core.orchestrator`) to see
+`StuckDetector`/`drive_stuck_detector` (`..core.stuck_drive`) to see
 whether a change to the advisory/hard-tier logic or a loop signal would fire
 differently on real history. That is the only way changes to this kind of
 event-driven logic get checked against real runs before they land: a
@@ -16,9 +16,10 @@ Two traps decide whether a replay like this means anything at all:
 
 TRAP 1 — the detector is driven from raw event fields (tool_use_id,
 exit_code, result_chars, edit payloads, tool_input), not just tool names.
-`drive_stuck_detector` is IMPORTED from `..core.orchestrator`, not
+`drive_stuck_detector` is IMPORTED from `..core.stuck_drive`, not
 reimplemented here, specifically so this module can never drift from what
-`Orchestrator._agent_sink` actually calls in production — a hand-rolled
+`Orchestrator._agent_sink` actually calls in production (it imports the
+same function from the same module) — a hand-rolled
 replica that only sees tool names cannot reproduce the edit-loop progress
 gate (`record_edit` / `note_test_run` / `record_test_outcome`) behind the
 hard tiers.
@@ -44,7 +45,7 @@ which for a live no_human deployment is usually most of the recent history.
 LIMIT: this replay can only guard logic driven by RECORDED events — tool
 names, tool_use_id, exit_code, result_chars, edit payloads, emitted kinds.
 It cannot see prompts, tool-result text (only its status/length are
-recorded, by design — see `_test_run_summary` in `..core.orchestrator`),
+recorded, by design — see `_test_run_summary` in `..core.stuck_drive`),
 worktree state, or collected test ids. A change to logic that reads any of
 those is not covered by this module, at all.
 """
@@ -60,7 +61,7 @@ from typing import Any, Iterable
 
 from ..agent.backend import AgentEvent
 from ..core.bounds import StuckDetector
-from ..core.orchestrator import drive_stuck_detector
+from ..core.stuck_drive import drive_stuck_detector
 
 #: `data` JSON blob keys that are NOT part of `AgentEvent.meta` — see the
 #: shape comment on `Orchestrator._agent_sink`'s persisted-row dict:
@@ -317,7 +318,7 @@ def replay_fires(
 ) -> set[str]:
     """Feed *events* (chronological — `AttemptReplay.events`, or any
     equivalent stream) through the exact production entry point
-    (`drive_stuck_detector`, imported from `..core.orchestrator` — see TRAP
+    (`drive_stuck_detector`, imported from `..core.stuck_drive` — see TRAP
     1 in this module's docstring for why that matters) against *detector*,
     and collect the SET of fire identifiers observed across the whole
     stream: ``"advisory:doom-loop"``, ``"advisory:edit-loop"``,

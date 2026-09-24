@@ -40,7 +40,7 @@ placeholder, never the real one.
 WHAT IT WRITES: one task, one attempt, replaying that real event stream
 verbatim (order and fields preserved) so it reproduces the SAME edit-loop
 hard-abort under `StuckDetector`'s default thresholds (`edit_abort=15`) when
-replayed through `drive_stuck_detector` (`no_human.core.orchestrator`). The
+replayed through `drive_stuck_detector` (`no_human.core.stuck_drive`). The
 worktree-style prefix embedded in every edit path (see above) is what makes
 TRAP 2 concrete: replaying with `repo_root=tasks.repo_path` (the wrong root)
 makes every edit read as agent-owned (`is_agent_owned` sees the `.no_human`
