@@ -6823,8 +6823,16 @@ class Orchestrator:
             detail = (f"{'design doc' if task.kind == 'design_doc' else 'investigation'}"
                   " complete (report-only, no code changes)")
             self.emit("investigation_report", detail)
+            # A report-kind task never commits, so it skips the tamper-guard/
+            # reviewer path entirely — but it still owes a VALIDATED
+            # transition to DONE, never `validate=False`. `IMPLEMENTING ->
+            # DONE` is deliberately absent from `ALLOWED_TRANSITIONS` (see
+            # core/task.py); the same two legal hops the clean-pass
+            # code_review completion below uses (`REVIEWING -> DONE` is in
+            # the map unconditionally) apply here too.
+            await self.store.set_status(task, TaskStatus.REVIEWING)
             await self.store.set_status(
-                task, TaskStatus.DONE, validate=False,
+                task, TaskStatus.DONE,
                 event={"source": "orchestrator", "kind": "investigation_report",
                        "text": detail})
             self.emit("state", "done", status="done")
