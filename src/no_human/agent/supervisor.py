@@ -348,6 +348,25 @@ def format_send_back_feedback(
         return "", True
 
 
+def review_continuity_send_back_lines(entries: Any) -> list[str]:
+    """The prior-send-back part of the reviewer gate's REVIEW CONTINUITY block.
+
+    HUMAN entries only, bounded, via `format_send_back_feedback`: a machine
+    entry such as `pr_comment` (text anyone who can comment on the PR wrote)
+    never reaches the gate prompt. An unreadable history is stated as
+    unknown, never rendered as empty.
+    """
+    text, unreadable = format_send_back_feedback(entries)
+    if text:
+        return ["  Prior send-back findings:", text,
+                "    Re-verify independently: determine whether each "
+                "finding is actually resolved and cite the evidence."]
+    if unreadable:
+        return ["  Prior send-back findings: UNREADABLE — treat the "
+                "send-back history as unknown, not as empty."]
+    return []
+
+
 def build_evaluation_prompt(
     *,
     task_title: str,
