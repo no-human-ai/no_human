@@ -27,6 +27,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { TELEMETRY_CONSENT_QUESTION } from "../src/onboardingConsent.js";
+import { BASE_STEPS } from "../src/onboardingSteps.js";
 
 const DIST = new URL("../dist", import.meta.url).pathname;
 
@@ -52,7 +53,11 @@ const check = (n, ok, d = "") => {
   if (!ok) failures.push(n);
 };
 
-const BASE_STEPS_COUNT = 8; // welcome/repos/projects/docs/integrations/history/rules/summary — Onboarding.jsx BASE_STEPS.
+// The real source of truth (web/src/onboardingSteps.js) rather than a
+// hardcoded rail-length constant — that constant went stale (8) the last
+// time a step was added/removed and this walk kept asserting the old count
+// instead of the actual rail contents.
+const EXPECTED_RAIL_LABELS = BASE_STEPS.map((s) => s.title.toLowerCase());
 const allErrors = [];
 
 // Every route a full welcome->Launch walk touches (see web/src/api.js), so a
@@ -111,8 +116,10 @@ const browser = await chromium.launch();
 
 // The usage-insights CONSENT step was REMOVED (operator, 2026-08-26): telemetry
 // is on by default and never asked about. So NO onboarding-status payload may
-// ever produce a "usage insights" rail entry, and the rail is always the fixed
-// 8 base steps — this suite proves the step is gone in the real built bundle.
+// ever produce a "usage insights" rail entry, and the rail is always exactly
+// BASE_STEPS (src/onboardingSteps.js) — this suite proves the step is gone in
+// the real built bundle, against the real step list rather than a count that
+// goes stale every time a step is added or removed.
 const STATUSES = [
   ["never asked",              { completed: false, telemetry_asked: false }],
   ["telemetry_asked absent",   { completed: false }],
@@ -124,8 +131,8 @@ for (const [name, status] of STATUSES) {
   const labels = await railLabels(page);
   check(`[${name}] no "usage insights" step in the rail`, !labels.includes("usage insights"),
     `rail labels: ${JSON.stringify(labels)}`);
-  check(`[${name}] rail entry count = BASE_STEPS (8)`, labels.length === BASE_STEPS_COUNT,
-    `got ${labels.length}`);
+  check(`[${name}] rail labels = BASE_STEPS`, JSON.stringify(labels) === JSON.stringify(EXPECTED_RAIL_LABELS),
+    `got ${JSON.stringify(labels)}, want ${JSON.stringify(EXPECTED_RAIL_LABELS)}`);
   await ctx.close();
 }
 

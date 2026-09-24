@@ -4,6 +4,18 @@
 // progress frames (`task_event`: merge_started/merge_step_*/human_merged)
 // ride the existing broadcast socket, so this stub is what lets a test push
 // them without a real backend.
+//
+// QUARANTINED (lane: manual — see e2e/manifest.mjs): pre-existing failure,
+// not caused by this change. The very first check crashes uncaught —
+// `page.evaluate: Execution context was destroyed, most likely because of a
+// navigation` at the `el.click()` .btn-approve latency probe (no PASS lines
+// run before it). No `<form>` wraps the button and no app-code navigation
+// call was found near handleApprove in the time available to triage this
+// walk; whether the destroyed-context is a walk race (evaluating across a
+// re-render/remount boundary) or a genuine unwanted navigation is undecided.
+// Left red rather than guessed at — see the Budget rule in .no_human/PLAN.md
+// (do not change application code to make a walk pass, and do not paper over
+// an undiagnosed failure by weakening the assertion).
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";

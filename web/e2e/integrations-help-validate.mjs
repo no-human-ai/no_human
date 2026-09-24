@@ -66,9 +66,30 @@ async function gotoIntegrations(page, { savedSpec, testResponse } = {}) {
   });
   await page.goto("http://127.0.0.1:4649/", { waitUntil: "networkidle" });
   await page.waitForTimeout(300);
-  const cont = async () => { await page.getByRole("button", { name: /^Continue$/ }).click(); await page.waitForTimeout(150); };
-  // welcome -> repos -> projects -> docs -> integrations
-  for (let i = 0; i < 4; i++) await cont();
+  // The Email step (required, not skippable) sits between Welcome and
+  // Repositories, and its Continue is `disabled` until the field holds a
+  // well-formed address — a bare click would sit on Playwright's enabled
+  // actionability check for 30s and then TimeoutError. Go THROUGH the step
+  // the way a user does: whenever the address field is on screen, type into
+  // it, then Continue (same idiom as onboarding-consent-step.mjs /
+  // onboarding-summary-counts.mjs).
+  const EMAIL = "walker@example.com";
+  const cont = async () => {
+    const field = page.getByPlaceholder("you@example.com");
+    if (await field.isVisible().catch(() => false)) {
+      await field.fill(EMAIL);
+      await page.waitForTimeout(100);
+    }
+    await page.getByRole("button", { name: /^Continue$/ }).click();
+    await page.waitForTimeout(150);
+  };
+  // welcome -> email -> repos -> projects -> integrations. Hop until the
+  // integrations step is actually on screen rather than a fixed hop count —
+  // the step list (src/onboardingSteps.js) has changed shape more than once.
+  for (let hop = 0; hop < 8; hop++) {
+    if (await page.getByRole("checkbox", { name: /Enable Linear/ }).isVisible().catch(() => false)) break;
+    await cont();
+  }
   // Turn Linear on so its fields (and their hints) render.
   await page.getByRole("checkbox", { name: /Enable Linear/ }).check();
   await page.waitForTimeout(150);

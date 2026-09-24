@@ -433,6 +433,60 @@ jobs:
 
       - run: npm test
 
+  # Nothing else in this workflow ever executes web/e2e/*.mjs — the `web` job
+  # above runs `npm test` only (node unit tests). Playwright walks (real
+  # chromium.launch(), driving the BUILT bundle) catch what those unit tests
+  # structurally cannot: a blank page from a ReferenceError that `vite build`
+  # bundles happily, a Preflight-off CSS regression, a light-theme var
+  # fallback bug. web/e2e/manifest.mjs is the single source of truth for
+  # which walks run here ("ci" lane) vs. by hand only ("manual" lane, each
+  # with a stated reason — a live server, an installed desktop shell, or a
+  # named, quarantined app defect that is out of scope to fix here).
+  #
+  # No `if:`, no `paths:`, no `needs:` — this runs on exactly what the `web`
+  # job above runs on (push to main, every pull_request). Scoping this to
+  # `web/**` was considered and rejected: extending the `changed` job with a
+  # new output is a large blast radius for a job that is pinned by 22
+  # assertions in tests/test_desktop_job_follows_paths.py, for a gate that is
+  # already cheap enough to just always run.
+  web_e2e:
+    name: Web UI gate (e2e walks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # Playwright's own browser binary, deliberately NOT skipped here (unlike
+      # the `web` job's PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD): this job is the one
+      # that actually launches chromium. `--with-deps` also installs the OS
+      # packages headless Chromium needs on a bare ubuntu-latest runner.
+      - name: Install the Chromium the walks launch
+        timeout-minutes: 5
+        run: npx playwright install --with-deps chromium
+
+      # Walks drive the BUILT bundle (web/dist), never the dev server — see
+      # e2e/run-all.mjs's header comment for why.
+      - run: npm run build
+
+      - run: npm run e2e:ci
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-e2e-shots
+          path: web/e2e/shots/
+          retention-days: 7
+
   # The CLI's distributable form. `hatch_build.py` makes the board REQUIRED for a
   # standard wheel — a wheel without web/dist installs an `nh` whose main command
   # renders nothing, and that shipped once — so this job builds the board the way

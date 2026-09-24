@@ -34,6 +34,7 @@ EXPECTED_JOB_TIMEOUTS = {
     "inventory": 5,
     "python": 30,
     "web": 15,
+    "web_e2e": 25,
     "wheel": 20,
     # The paths detector (#297): one gh api call, no checkout.
     "changed": 5,
@@ -207,6 +208,27 @@ def test_job_timeouts_are_not_increased():
 
     missing = sorted(set(EXPECTED_JOB_TIMEOUTS) - set(actual))
     assert not missing, f"job(s) disappeared from the workflow: {missing}"
+
+
+def test_web_e2e_job_runs_the_ci_lane_unconditionally():
+    """The `web_e2e` job actually executes the Playwright walks (the feature
+    this test guards, see .no_human/PLAN.md) -- before it existed, `npm run
+    e2e` was reachable only by a human's own invocation, so the walks' own
+    coverage was advisory. No `if:`/`needs:` at the job level: it must run on
+    exactly what the `web` job above it runs on (push to main, every PR),
+    not a narrower gate."""
+    workflow = _load_workflow()
+    jobs = workflow["jobs"]
+    assert "web_e2e" in jobs, "the web_e2e job was not found in the workflow"
+    job = jobs["web_e2e"]
+
+    assert "if" not in job, "web_e2e must not be conditionally gated"
+    assert "needs" not in job, "web_e2e must not depend on another job"
+
+    run_steps = [s.get("run", "") for s in job["steps"]]
+    assert any("npm run e2e:ci" in r for r in run_steps), (
+        f"web_e2e must run the e2e:ci lane; got steps: {run_steps!r}"
+    )
 
 
 def test_no_step_can_silently_pass():
