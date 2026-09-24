@@ -1512,7 +1512,11 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25039 -> 25075 (+36): the committed fix for this round's blocker.
+    # Re-anchored, measured on this tree with the scanner below.
+    # 25075 -> 25089 (+14): the committed fix for this round's blocker.
+    # Re-anchored, measured on this tree with the scanner below.
+    "core/orchestrator.py": 25120,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -2286,7 +2290,9 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 2776 (+13): the committed fix for this round's blocker.
+    # Re-anchored, measured on this tree with the scanner below.
+    "blockers/wake.py": 2776,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
