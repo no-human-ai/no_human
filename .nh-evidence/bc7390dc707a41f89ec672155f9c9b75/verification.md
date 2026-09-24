@@ -1,47 +1,54 @@
 # How I verified this — full log
 
-_Harness-captured record for task `bc7390dc`, commit `cc27598f341ca72495b523797b5a0dadb8e3a8d0` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bc7390dc`, commit `a5e49997b1c123e1d576532983e695f072010e41` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.28594.512aaad6 git merge-base --is-ancestor 79564c7bcd62af83c25ba4dde0392c3ebcb306ca HEAD && echo "MERGED OK" uv run pytest -q tests/test_readme_claims.py -k "eval.md or WINDOWS.md or bench_run or _try_kill" 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -60`
 
 ```
-MERGED OK
-.........                                                                [100%]
-9 passed, 170 deselected in 5.77s
-```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f
+Installed 73 packages in 478ms
+..F................                                                      [100%]
+=================================== FAILURES ===================================
+_______________________ test_no_new_oversized_functions ______
+[... 662 of 1,801 characters omitted from the middle ...]
+EN_FUNC...s not frozen'] == []
+E         
+E         Left contains one more item: 'FROZEN_FUNCTION_LINES: vcs/approve_merge.py:_land_in_worktree is 302 (> 300) and is not frozen'
+E         Use -v to get more diff
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.28594.512aaad6 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -40`
+tests/test_structural_budget.py:2635: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_new_oversized_functions - Ass...
+1 failed, 18 passed in 7.03s
+```  
+  _excerpt - 1,795 characters of output in total_
 
-```
-..................                                                       [100%]
-18 passed in 3.08s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.28594.512aaad6 uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -20`
-
-```
-............................s.s.s.s.s.s.s.s.s.s......................... [ 40%]
-......................s............................s.................... [ 80%]
-...................................                                      [100%]
-167 passed, 12 skipped in 4.80s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.28594.512aaad6 uv run pytest -q tests/test_already_satisfied_landing.py 2>&1 | tail -30`
-
-```
-.........                                                                [100%]
-9 passed in 6.88s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.28594.512aaad6 uv run pytest -q tests/test_approve_merge.py::test_the_merge_gate_never_shells_out_to_the_frozen_nh_binary tests/test_merge_policy_wiring.py tests/test_profile_divergence.py tests/test_worktree_setup_cmds.py 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
 
 ```
-.....................................................                    [100%]
-53 passed in 47.09s
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...................                                                      [100%]
+19 passed in 3.34s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f uv run pytest tests/test_approve_merge.py -k test_the_full_gate_runs_the_repo_profile_test_command -q 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.                                                                        [100%]
+1 passed, 78 deselected in 9.36s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bc7390dc707a41f89ec672155f9c9b75.7034.f8a1f37f timeout 115 uv run pytest tests/test_approve_merge.py tests/test_profile_resolve.py tests/test_merge_policy_wiring.py -q 2>&1 | tail -20`
+
+```
+(eval):2: command not found: timeout
 ```
 
 
