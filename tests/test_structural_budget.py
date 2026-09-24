@@ -499,6 +499,13 @@ FROZEN_FUNCTION_LINES = {
     # which is why it went unnoticed. Measured on this tree with the scanner
     # below.
     "review/reviewer.py:_build_review_prompt": 347,
+    # NEW (302, > 300): the step-6b test gate now runs the repo profile's own
+    # `test_cmd` (e.g. `npm test`) through the single `_run_pytest` seam
+    # instead of always forcing `python -m pytest` — the branch that decides
+    # focused-vs-full gate selection, builds the profile-command argv, and
+    # renders the fail-closed NAMED-runner message on a runner that cannot
+    # start. Measured on this merged tree with the scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 302,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -1729,10 +1736,18 @@ FROZEN_FILE_LINES = {
     # that runs the fresh-session reviewer and the tamper guard over the
     # current branch or a GitHub PR with no daemon, no server, and no Store).
     # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
-    # mergeability as its own not-landable category (summary line and the
-    # --yes skip message) instead of counting it as landable.
-    "cli/commands.py": 9267,
+    # 9250 -> 9257 (+7): `_land_one` resolves the repo profile's own test
+    # command (`profile_resolve.resolve_test_cmd`) and threads it through as
+    # `land_task(..., test_cmd=gate_cmd)`, so the merge gate's FULL run uses
+    # the repo's own `npm test`/etc. instead of always forcing `python -m
+    # pytest`.
+    # 9257 -> 9274 (+17): merged with origin/main, which independently added
+    # unknown-mergeability handling to `nh approve --ready` (its own
+    # not-landable category, summary line, and the `--yes` skip message)
+    # instead of counting it as landable. Measured on this merged tree with
+    # the scanner below (`len(Path(...).read_text().splitlines())` agrees:
+    # 9274).
+    "cli/commands.py": 9274,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1925,7 +1940,12 @@ FROZEN_FILE_LINES = {
     # and threading `registration_status` into the persisted onboarding
     # state and the response body. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6366,
+    # 6366 -> 6373 (+7): `_merge_task_pr` resolves the repo profile's own
+    # test command (`profile_resolve.resolve_test_cmd`) and threads it
+    # through as `land_task(..., test_cmd=gate_cmd)`, same reason as
+    # `cli/commands.py` above. Measured on this merged tree with the scanner
+    # below (`len(Path(...).read_text().splitlines())` agrees: 6373).
+    "api/app.py": 6373,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

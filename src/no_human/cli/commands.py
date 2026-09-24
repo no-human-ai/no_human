@@ -5808,10 +5808,17 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
                     "evidence": evidence, "result": None}
 
         tested = (await store.latest_attempt_branch(t.id)).get("commit_sha") or ""
+        from ..core.profile_resolve import resolve_test_cmd
+        try:
+            gate_cmd = await resolve_test_cmd(store, config, t.repo_path) or ""
+        except Exception:  # noqa: BLE001 — a profile lookup problem must
+            # never block a land; degrade to the merge gate's own default
+            # (python -m pytest).
+            gate_cmd = ""
         result = land_task(
             repo_path=t.repo_path, branch=branch, pr_url=pr_url,
             task_id=t.id, task_title=t.title, review_evidence=evidence,
-            config=config.data, tested_commit_sha=tested,
+            config=config.data, tested_commit_sha=tested, test_cmd=gate_cmd,
         )
 
         if result.skipped:

@@ -139,6 +139,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -765,6 +766,40 @@ def _decide_gate(landed_tree: str, tested_commit_sha: str,
                      f"{tested_commit_sha[:12]}: conflict rounds or a moved base)")
 
 
+def _is_pytest_command(cmd: str) -> bool:
+    """True when pytest is the RUNNER being invoked (not substring matching):
+    any token whose basename is 'pytest'/'py.test', or a
+    python|python3|pythonX.Y token immediately followed by '-m pytest'.
+    '' (no profile command) is treated as pytest-based by the caller."""
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not tokens:
+        return True
+    for i, tok in enumerate(tokens):
+        base = os.path.basename(tok)
+        if base in ("pytest", "py.test"):
+            return True
+        if re.fullmatch(r"python[23]?(\.\d+)?", base) and tokens[i + 1:i + 3] == ["-m", "pytest"]:
+            return True
+    return False
+
+
+def _gate_argv(cmd: str, py: str) -> list[str]:
+    """shlex.split(cmd), with a leading bare 'python'/'python3'/'pythonX.Y'
+    token rebound to *py* (the resolved real interpreter) so a frozen build
+    never re-enters the click CLI. Raises ValueError on an unparseable or
+    empty command."""
+    argv = shlex.split(cmd)
+    if not argv:
+        raise ValueError(f"empty test command: {cmd!r}")
+    base = os.path.basename(argv[0])
+    if base in ("python", "python3") or re.fullmatch(r"python\d+\.\d+", base):
+        argv[0] = py
+    return argv
+
+
 def _close_pr(pr_url: str, cwd: Path) -> str:
     """Close *pr_url* without a comment. Idempotent, best-effort: any problem
     (gh/glab missing, network, already handled) returns a note but never
@@ -841,6 +876,7 @@ def land_task(
     changed_test_paths: list[str] | None = None,
     tested_commit_sha: str = "",
     remote: str = "origin",
+    test_cmd: str = "",
     _before_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
@@ -860,6 +896,14 @@ def land_task(
     base moved since) — or *tested_commit_sha* is empty or does not resolve
     — the gate runs the FULL suite instead, since the full-suite evidence
     attached to the PR is only ever valid for the tree it actually ran on.
+
+    ``test_cmd`` is the repo profile's own test command (e.g. ``"npm
+    test"``), resolved by the caller (``profile_resolve.resolve_test_cmd``).
+    ``""`` (no profile command, or resolution failed) means "fall back to
+    ``python -m pytest``" — today's behaviour. The FULL gate runs *test_cmd*
+    verbatim (via the one sanctioned `_run_pytest` seam); the FOCUSED gate
+    only ever runs a pytest subset, so a non-pytest *test_cmd* forces the
+    FULL gate instead of silently skipping it.
 
     ``_before_push`` is a test-only seam: a callable invoked immediately
     before the push-time tip re-check, so a test can simulate a concurrent
@@ -1017,7 +1061,7 @@ def land_task(
             op_name=op_name, op_email=op_email, test_timeout=test_timeout,
             full_test_timeout=full_test_timeout,
             pr_url=pr_url, changed_test_paths=changed_test_paths,
-            tested_commit_sha=tested_commit_sha,
+            tested_commit_sha=tested_commit_sha, test_cmd=test_cmd,
             _before_push=_before_push, on_step=on_step,
         )
     finally:
@@ -1178,6 +1222,7 @@ def _land_in_worktree(
     task_title: str, review_evidence: str, op_name: str, op_email: str,
     test_timeout: float, full_test_timeout: float, pr_url: str,
     changed_test_paths: list[str] | None, tested_commit_sha: str = "",
+    test_cmd: str = "",
     _before_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
@@ -1334,6 +1379,15 @@ def _land_in_worktree(
     tested_tree = _tree_of(worktree_path, tested_commit_sha)
     gate, gate_reason = _decide_gate(landed_tree, tested_commit_sha, tested_tree)
 
+    cmd = (test_cmd or "").strip()
+    if cmd and gate == "focused" and not _is_pytest_command(cmd):
+        # The focused gate only ever re-runs a pytest SUBSET (`-q <paths>`);
+        # a non-pytest profile command (npm test, go test, ...) has no such
+        # subset mode, so the FULL profile command runs instead of silently
+        # skipping the gate.
+        gate = "full"
+        gate_reason = f"full (repo test command is not pytest-based: {cmd})"
+
     if gate == "focused":
         test_paths = changed_test_paths
         if test_paths is None:
@@ -1352,6 +1406,14 @@ def _land_in_worktree(
                                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
                                    stderr=f"{gate_reason}\nchange-scoped tests timed out "
                                           f"after {test_timeout}s")
+            except OSError as exc:
+                # Fail closed, naming the runner — never a raw test-dump.
+                return LandResult(
+                    ok=False, step="tests", branch=branch, pr_url=pr_url,
+                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                    stderr=f"{gate_reason}\ncannot start the merge-time test "
+                           f"runner: runner {py!r} could not be executed "
+                           f"({type(exc).__name__}: {exc})")
             if test_proc.returncode != 0:
                 return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
                                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
@@ -1360,9 +1422,21 @@ def _land_in_worktree(
     else:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(worktree_path / "src")
-        argv = [py, "-m", "pytest", "-q"]
-        if importlib.util.find_spec("xdist") is not None:
-            argv += ["-n", "4"]
+        if cmd:
+            # The repo profile's own FULL test command — this is the fix:
+            # the gate used to force `python -m pytest` here unconditionally.
+            try:
+                argv = _gate_argv(cmd, py)
+            except ValueError as exc:
+                return LandResult(
+                    ok=False, step="tests", branch=branch, pr_url=pr_url,
+                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                    stderr=f"{gate_reason}\ncannot start the repo's test "
+                           f"command {cmd!r}: {exc}")
+        else:
+            argv = [py, "-m", "pytest", "-q"]
+            if importlib.util.find_spec("xdist") is not None:
+                argv += ["-n", "4"]
         try:
             test_proc = _run_pytest(argv, cwd=worktree_path, timeout=full_test_timeout, env=env)
         except subprocess.TimeoutExpired:
@@ -1370,6 +1444,18 @@ def _land_in_worktree(
                                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
                                stderr=f"{gate_reason}\nfull suite timed out after "
                                       f"{full_test_timeout}s")
+        except OSError as exc:
+            # Fail closed, naming the runner — never a raw test-dump. This is
+            # the ONLY place a profile command's runner is attempted; no
+            # second seam pre-checks it (that broke frozen-build fail-closed
+            # semantics — see the regression guard test).
+            runner = argv[0]
+            return LandResult(
+                ok=False, step="tests", branch=branch, pr_url=pr_url,
+                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                stderr=f"{gate_reason}\ncannot start the repo's test command "
+                       f"{cmd!r}: runner {runner!r} could not be executed "
+                       f"({type(exc).__name__}: {exc})")
         if test_proc.returncode == 5:
             # No tests collected — a repo with no suite must not be blocked
             # from landing; annotate rather than fail.
