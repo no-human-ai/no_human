@@ -314,6 +314,16 @@ blockers:                         # Part 22
                                   # external category, every second blocker and every
                                   # check failure park exactly as before. Set false to
                                   # park on the first blocker, unchallenged.
+  ignore_comment_authors: []      # PR comment/review logins that never trigger a
+                                  # revision (e.g. a CI service account that posts
+                                  # a results table on every build). "[bot]" logins
+                                  # are always ignored on top of this list.
+  allow_comment_bot_authors: []   # logins whose comments/reviews COUNT as human
+                                  # feedback even though GitHub reports
+                                  # `user.type == "Bot"` (its built-in AI reviewer
+                                  # posts this way, with no "[bot]" login suffix).
+                                  # A login in BOTH lists stays ignored:
+                                  # ignore_comment_authors always wins.
 
 usage_ledger:
   retention_days: 90              # unattributed_usage rows older than this are rolled

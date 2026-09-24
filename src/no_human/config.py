@@ -1930,6 +1930,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # default names none — set yours in `blockers:`. NOTE: a user-yaml `blockers:` section
         # replaces this map wholesale, so wake.py carries the same default.
         "ignore_comment_authors": [],
+        # Bot logins whose comments/reviews COUNT as human feedback despite
+        # GitHub reporting `user.type == "Bot"` (GitHub's built-in AI
+        # reviewer posts line comments this way, from a login with no
+        # "[bot]" suffix, and would otherwise never wake a task). Separate
+        # from `ignore_comment_authors` above — one blocks, this allows —
+        # and `ignore_comment_authors` always wins when a login is in both.
+        # Same wholesale-replace caveat: wake.py carries the same default.
+        "allow_comment_bot_authors": [],
         "max_ci_fix_rounds": 3,
         # "enforce" (default): a red PR check counts a fix round and can
         # escalate past max_ci_fix_rounds. "advisory": record the red, never

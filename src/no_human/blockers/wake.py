@@ -206,6 +206,17 @@ class WakeWatcher:
             str(a).lower()
             for a in blockers_cfg.get("ignore_comment_authors", [])
         }
+        # Opt-in escape for `_is_bot_comment`'s new `author_type == "Bot"`
+        # rule: GitHub's built-in AI reviewer posts line comments from a
+        # login with NO "[bot]" suffix but `user.type == "Bot"`, so by
+        # default it is treated as a bot regardless of login shape. A named
+        # bot here is treated as human feedback instead. Separate key,
+        # in-code default for the same deep-merge-shadowing reason as
+        # `ignore_comment_authors` just above.
+        self.allow_comment_bot_authors = {
+            str(a).lower()
+            for a in blockers_cfg.get("allow_comment_bot_authors", [])
+        }
         self.config = config or {}
         self._pr_merged = pr_merged
         # Default to the real checkers when the caller doesn't inject one
@@ -1269,6 +1280,34 @@ class WakeWatcher:
         a = (author or "").lower()
         return a.endswith("[bot]") or a in self.ignore_comment_authors
 
+    def _is_bot_comment(self, comment) -> bool:
+        """Whether *comment* (a `PrComment` or comment-like object) counts as
+        a bot, using both login shape and GitHub's own `user.type`.
+
+        Precedence, most specific first:
+          1. login in `ignore_comment_authors` -> bot. An explicit block
+             always wins; the opt-in below must never resurrect a muted
+             author.
+          2. login in `allow_comment_bot_authors` -> human. The opt-in:
+             overrides both the "[bot]" suffix and `author_type == "Bot"`.
+          3. `author_type` case-insensitively "bot" -> bot. GitHub's built-in
+             AI reviewer posts from a login with NO "[bot]" suffix but
+             `user.type == "Bot"`, so login shape alone misses it.
+          4. else fall back to `_is_bot_author` (the "[bot]" suffix rule).
+
+        Objects with no `author_type` (GitLab, plain dicts, hand-built
+        `PrComment`s in existing tests) fall through to step 4 unchanged.
+        """
+        login = (getattr(comment, "author", "") or "").lower()
+        if login in self.ignore_comment_authors:
+            return True
+        if login in self.allow_comment_bot_authors:
+            return False
+        author_type = (getattr(comment, "author_type", "") or "").lower()
+        if author_type == "bot":
+            return True
+        return self._is_bot_author(login)
+
     async def _human_pr_comments(self, pr_ref: str) -> list:
         """Comments on *pr_ref* that are actual feedback: no bot chatter, and
         none of no_human's own marked output.
@@ -1304,7 +1343,7 @@ class WakeWatcher:
         the CI_GATE results comment resumed its own task) — so bodies carry
         AGENT_COMMENT_MARKER and are filtered here."""
         from ..vcs.pr_watcher import is_agent_comment
-        return (self._is_bot_author(getattr(comment, "author", ""))
+        return (self._is_bot_comment(comment)
                 or is_agent_comment(getattr(comment, "body", None)))
 
     async def _append_comments_as_feedback(
