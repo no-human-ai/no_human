@@ -884,6 +884,50 @@ and the Settings > Usage insights pane were removed (operator, 2026-08-26), so
 `telemetry.posthog_host`'s `/batch/` endpoint by default; a configured
 `telemetry.endpoint` (the first-party Lambda) takes precedence when set.
 
+## Capability-gap events: opt-in, default off
+
+A separate channel from usage insights above, with a separate switch, a
+separate pseudonym and a separate destination — `telemetry.enabled` does not
+affect it either way. It is **off**, and it stays off until you turn it on. Full contract in
+[`docs/CAPABILITY_GAP.md`](CAPABILITY_GAP.md).
+
+A capability gap is a bounded attempt that stopped because something the
+machine *needed* was missing — a dead backend, a spent quota, an access it
+does not hold, a budget it may not exceed. An ordinary failure of the change
+itself (a red test, a failed review, a tamper block, an exhausted attempt cap)
+is **not** a capability gap and emits nothing.
+
+```yaml
+capability_gap:
+  enabled: false            # the whole channel; nothing is written or sent while false
+  sink: jsonl               # "jsonl" (a local file, no network) or "http"
+  dir: ""                   # spool DIRECTORY; empty -> ~/.no_human (file is always capability-gap.jsonl)
+  endpoint: ""              # required by sink: http; https, or http on loopback only
+  max_lines: 10000          # lines kept when the file is compacted
+  instance_pseudonym: ""    # empty -> a uuid4 in ~/.no_human/capability-gap-id
+  synthetic: null           # null -> derived; true/false forces the flag
+```
+
+With `sink: jsonl` nothing leaves the machine: events are appended to
+`<dir>/capability-gap.jsonl` and a local consumer tails the file. Only the
+directory is configurable — the filename is fixed so that the spool's
+compaction and flush rewrite can never be pointed at another file — and a
+spool that is a symlink is refused. With `sink: http` the same file becomes a
+spool that a background thread drains to `endpoint` in batches of 50, one
+flush at a time. An
+`endpoint` that is not `https://` (or `http://` on loopback) resolves no
+destination at all, so a mistyped scheme disables the channel rather than
+being honoured.
+
+An event carries a coarse capability class, a reason code and constraints
+drawn from per-key closed enums, plus an event id, a timestamp, the install
+pseudonym, the app version and a synthetic flag whose shapes are checked
+before an event is written or sent (a canonical uuid, a UTC timestamp, and
+1–64 characters of `A-Za-z0-9._+-` for version and pseudonym). There is no
+free-text field; a spooled line that fails the checks is dropped, not sent. The pseudonym is minted
+independently of the usage-insights instance id above and is never written to
+`config.yaml`, so a recipient of one channel cannot join it to the other.
+
 ## Tests command
 
 `tests.command` (optional) overrides test detection for the local suite the

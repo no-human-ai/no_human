@@ -107,6 +107,19 @@ def test_cost_is_priced_from_the_token_classes_when_no_total_is_recorded():
     assert v.cost == 1000 + int(0.1 * 100_000) + int(1.25 * 8000)
 
 
+def test_the_fallback_prices_the_output_premium_too():
+    """The token-class fallback must price the output SHARE of `tokens_used`
+    at its own (higher) weight too — a record with no output split at all is
+    exactly the shape issue #425's `weighted_tokens: null` records had."""
+    without_output = evaluate({**GREEN, "weighted_tokens": None,
+                               "tokens_used": 1000}, CRIT)
+    with_output = evaluate({**GREEN, "weighted_tokens": None,
+                            "tokens_used": 1000, "output_tokens": 200}, CRIT)
+    assert without_output.cost == 1000
+    assert with_output.cost == 1000 + 200 * 4
+    assert with_output.cost - without_output.cost == 800
+
+
 def test_criteria_load_from_the_tier_json():
     crit = FunnelCriteria.from_dict({
         "pr_opened": True, "review_passed": True, "holdout_green": True,

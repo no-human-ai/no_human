@@ -2130,11 +2130,16 @@ FROZEN_FILE_LINES = {
     # alongside RESEND_API_KEY_VAR. Measured on this tree with the scanner
     # below: actual 3689, which is what this entry froze at this point.
     # Later entries would move it further.
+    # 3689 -> 3718 (+29): the `capability_gap.*` defaults in DEFAULT_CONFIG
+    # (enabled=False, sink, dir, endpoint, max_lines, instance_pseudonym,
+    # synthetic) with their explanatory comments — config defaults live in
+    # DEFAULT_CONFIG, not in the module that reads them. Measured on this
+    # tree with the scanner below.
     # 3689 -> 3697 (+8): `blockers.allow_comment_bot_authors` default plus
     # its explanatory comment -- the opt-in that lets a named bot's
     # comments/reviews count as human feedback despite `user.type ==
     # "Bot"`. Measured on this tree with the scanner below.
-    "config.py": 3697,
+    "config.py": 3726,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the

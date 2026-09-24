@@ -1,0 +1,17 @@
+{
+  "_what_this_is": "The rolling cost reference for the nightly funnel. `funnel_eval.compare_to_cost_reference` holds tonight's weighted cost against the median of the last `COST_HISTORY_NIGHTS` (30) nights recorded here: the night TOTAL over 1.15x the median total is red, and any ONE tier over 2x its own median is red, independent of the total. Fewer than 30 nights recorded is a WARM-UP: nothing is gated on cost yet, which is why this file can ship with a single recorded night instead of 30 invented ones (see issue #425 — a flat 25%-over-baseline band per tier fired on ordinary day-to-day noise).",
+  "_how_to_refresh": "Append one entry per recorded night, never edit or remove one in place: `{\"date\": \"YYYY-MM-DD\", \"total\": <sum of that night's tier costs>, \"tasks\": {\"<tier>\": <cost>, ...}}`, copied from a `out/nightly-YYYY-MM-DD.json` you have READ. Only the most recent `COST_HISTORY_NIGHTS` entries are used, so older ones may be trimmed but do not need to be. Never invented: an entry that was not read off a real report is a fake reference the whole gate then trusts.",
+  "nights": [
+    {
+      "date": "2026-08-19",
+      "total": 653834,
+      "tasks": {
+        "t1_docs_oneliner": 84972,
+        "t2_small_fix": 131731,
+        "t3_small_feature": 156405,
+        "t4_cross_file": 142199,
+        "t5_test_first": 138527
+      }
+    }
+  ]
+}

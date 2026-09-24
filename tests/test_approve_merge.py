@@ -556,7 +556,7 @@ def test_lands_on_remote_tracking_tip_not_stale_local_branch(land_env):
         "plain fetch, or this test proves nothing")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature",
+        task_id="deadbeef", task_title="feat: add feature",
         review_evidence="review PASS on abc123 after 1 round(s)",
         config=land_env.config,
     )
@@ -597,7 +597,7 @@ def test_lands_on_a_tip_pushed_after_the_branch(land_env):
 
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature",
+        task_id="deadbeef", task_title="feat: add feature",
         review_evidence="review PASS on abc123 after 1 round(s)",
         config=land_env.config, _before_push=_sample_pre_push,
     )
@@ -621,7 +621,7 @@ def test_squash_produces_single_commit(land_env):
     tip = land_env.tip_sha()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -635,7 +635,7 @@ def test_manifest_reset_classification_preserved(land_env):
     branch_classification = (land_env.clone / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -685,7 +685,7 @@ def test_squash_lands_an_nh_evidence_directory_committed_on_the_branch(land_env)
     )
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -717,7 +717,7 @@ def test_identity_defaults_to_repo_git_config(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-default-identity")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -737,7 +737,7 @@ def test_repo_local_git_identity_wins_over_global(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-local-wins")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -755,7 +755,7 @@ def test_explicit_approve_identity_overrides_git_config(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-explicit-wins")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -776,7 +776,7 @@ def test_identity_is_never_the_agent_identity_when_git_config_empty(land_env, mo
     branch, head_sha = land_env.cut_branch("no-human/t-no-identity")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok is False
@@ -787,7 +787,7 @@ def test_identity_is_never_the_agent_identity_when_git_config_empty(land_env, mo
     # commit/push, so the branch it would have squashed never landed.
     assert land_env.tip_sha() == tip_before
     log = _git(land_env.origin, "log", "--format=%s", "main").stdout
-    assert "Add feature" not in log
+    assert "feat: add feature" not in log
 
 
 def test_refusal_message_names_the_fix(land_env, monkeypatch):
@@ -800,7 +800,7 @@ def test_refusal_message_names_the_fix(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-refusal-message")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok is False
@@ -818,7 +818,7 @@ def test_partial_git_identity_refuses(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-partial-identity")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok is False
@@ -841,7 +841,7 @@ def test_commit_uses_operator_identity(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-ident")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -854,13 +854,13 @@ def test_commit_message_shape(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-msg")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="task-deadbeef", task_title="Add the feature everyone wants",
+        task_id="task-deadbeef", task_title="feat: add the feature everyone wants",
         review_evidence="review PASS on abc123 after 2 round(s)",
         config=land_env.config,
     )
     assert result.ok, result.stderr
     msg = _git(land_env.origin, "show", "-s", "--format=%B", result.landed_sha).stdout
-    assert "Add the feature everyone wants" in msg
+    assert "feat: add the feature everyone wants" in msg
     assert "task-deadbeef" in msg
     assert "review PASS on abc123 after 2 round(s)" in msg
 
@@ -877,7 +877,7 @@ def test_commit_message_scrubs_flagged_vendor_term_from_title(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-vendor-term")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="task-deadbeef", task_title=f"Fix the {term} integration bug",
+        task_id="task-deadbeef", task_title=f"fix: the {term} integration bug",
         review_evidence=f"review PASS, compared favorably to {term}",
         config=land_env.config,
     )
@@ -892,7 +892,7 @@ def test_commit_message_leaves_ordinary_title_and_evidence_unchanged(land_env):
     """Control: text carrying no flagged term must pass through the scrub
     byte-for-byte, so the fix does not corrupt an ordinary commit message."""
     branch, head_sha = land_env.cut_branch("no-human/t-vendor-term-control")
-    title = "Add the feature everyone wants"
+    title = "feat: add the feature everyone wants"
     evidence = "review PASS on abc123 after 2 round(s)"
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
@@ -905,13 +905,151 @@ def test_commit_message_leaves_ordinary_title_and_evidence_unchanged(land_env):
     assert evidence in msg
 
 
+def test_non_conventional_subject_refuses_before_any_push(land_env):
+    """AC: a task title that is plain prose produces a squash subject that
+    is not Conventional Commits v1.0.0 compliant — `land_task` must refuse
+    at `preconditions`, before fetch/worktree/squash/commit/push, and touch
+    neither the remote default branch nor the PR."""
+    tip_before = land_env.tip_sha()
+    branch, head_sha = land_env.cut_branch("no-human/t-non-conventional")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add the feature everyone wants",
+        review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok is False
+    assert result.step == "preconditions"
+    assert result.landed_sha == ""
+    assert "nh task retitle" in result.stderr
+    assert "Conventional Commits" in result.stderr
+    # No push: the remote tip is byte-identical, and no `gh` merge/close call
+    # was ever made (the fixture logs every `gh` argv).
+    assert land_env.tip_sha() == tip_before
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines()
+             if l.strip()]
+    assert not any(a[:2] in (["pr", "merge"], ["pr", "close"]) for a in argvs), argvs
+
+
+def test_refusal_survives_redaction(land_env):
+    """Pins the intake decision: validation runs on the REDACTED subject, not
+    the raw task title. A banned term used as the type token is, on its own,
+    a conventional subject (`devin: do the thing`) — but `redact_for_publish`
+    rewrites the type to `<redacted>`, which is not a bare word, so the
+    result must still refuse."""
+    from no_human.eval.vendor_terms import BANNED_TERMS
+
+    term = BANNED_TERMS[0]
+    branch, head_sha = land_env.cut_branch("no-human/t-redaction-refusal")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title=f"{term}: do the thing",
+        review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok is False
+    assert result.step == "preconditions"
+    assert result.landed_sha == ""
+    assert "nh task retitle" in result.stderr
+    assert "Conventional Commits" in result.stderr
+
+
+def test_conventional_subject_lands_normally(land_env):
+    """AC positive control: a Conventional-Commits-compliant subject lands
+    exactly as given — no auto-rewrite, no prefixing, no normalization."""
+    branch, head_sha = land_env.cut_branch("no-human/t-conventional-lands")
+    title = "fix(approve): refuse a non-conventional subject"
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="task-deadbeef", task_title=title, review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    subject = _git(land_env.origin, "show", "-s", "--format=%s",
+                    result.landed_sha).stdout.strip()
+    assert subject == title
+    msg = _git(land_env.origin, "show", "-s", "--format=%B", result.landed_sha).stdout
+    assert "task-deadbeef" in msg
+    assert "review PASS" in msg
+
+
+def test_conventional_subject_variants_are_accepted():
+    """Pure-unit table over `conventional_subject_error` — no `land_env`, no
+    git: the published Conventional Commits v1.0.0 spec as-is, no
+    project-specific type allow-list, scope requirement, or breaking-change
+    rule."""
+    from no_human.core.task import conventional_subject_error
+
+    accepted = [
+        "feat: x",
+        "fix(scope): x",
+        "feat!: x",
+        "refactor(a/b)!: x",
+        "chore: multi word description",
+    ]
+    rejected = [
+        "Add feature",
+        "feat:no space",
+        "feat: ",
+        "feat (scope): x",
+        ": x",
+        "feat(: x",
+        "",
+        "Add stuff\nfeat: x",
+    ]
+    for subject in accepted:
+        assert conventional_subject_error(subject) is None, subject
+    for subject in rejected:
+        assert conventional_subject_error(subject) is not None, subject
+
+
+def test_whitespace_only_description_is_refused():
+    """`if not description:` is truthy for a whitespace-only description, so
+    a subject like `feat:    ` (no actual description, just whitespace after
+    the separator) silently passed the old check. `.strip()` closes it."""
+    from no_human.core.task import conventional_subject_error
+
+    for subject in ("feat:    ", "fix:  ", "fix: \t", "fix(a):   "):
+        assert conventional_subject_error(subject) is not None, subject
+    # Control: a real, non-whitespace description still passes.
+    assert conventional_subject_error("fix: x") is None
+
+
+def test_composed_subject_with_external_id_can_be_non_conventional():
+    """`commit_subject()` — the repo's one home for composing a subject from
+    a title plus an external ticket ref — prepends `f"{external_id}: "`
+    ahead of the title's own type token. A ticket ref (`MON-123`, `PROJ-7`,
+    a bare numeric monday.com id, `owner/repo#42`) is never itself a valid
+    Conventional Commits type (a letter-led single word), so the composed
+    result is non-conventional even when the bare title alone is fine —
+    `conventional_subject_error` correctly tells the two apart.
+
+    NB: `land_task`'s own squash-commit step (`_land_in_worktree`, step 5)
+    builds its message from `redact_for_publish(task_title)` alone and never
+    calls `commit_subject()` — external_id/prefix composition happens only
+    for the per-attempt in-branch commit and the PR title, both of which the
+    squash discards. So this is a validator-correctness test, not a claim
+    that `land_task` gates on the composed form: doing that would refuse
+    every external_id-bearing task unconditionally and unfixably (no title
+    correction can undo `commit_subject`'s auto-prepended ref), since a
+    ticket ref can never itself be a valid Conventional Commits type.
+    """
+    from no_human.core.task import commit_subject, conventional_subject_error
+
+    title = "fix(x): y"
+    assert conventional_subject_error(title) is None
+    for external_id in ("MON-123", "PROJ-7", "1234567890", "owner/repo#42"):
+        composed = commit_subject(title, external_id, "")
+        assert conventional_subject_error(composed) is not None, composed
+
+
 def test_aborts_when_export_guard_verify_fails(land_env):
     branch, head_sha = land_env.cut_branch(
         "no-human/t-verifyfail", extra_files={"FORCE_VERIFY_FAIL": "x"})
     before = land_env.remote_main_sha()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -933,7 +1071,7 @@ def test_change_scoped_tests_run_against_worktree(land_env, tmp_path, monkeypatc
         "no-human/t-scopedtests", extra_files={"tests/test_feature.py": marker_test})
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -978,7 +1116,7 @@ def test_diverged_tree_runs_the_full_gate_before_push(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-diverged")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=base_sha,
     )
     assert result.ok, result.stderr
@@ -998,7 +1136,7 @@ def test_full_gate_failure_blocks_the_push(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-fullfail")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha="",
     )
     assert not result.ok
@@ -1058,7 +1196,7 @@ def test_full_gate_failure_names_the_failing_test(land_env):
     )
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha="",
     )
     assert not result.ok
@@ -1086,7 +1224,7 @@ def test_full_gate_passing_run_still_lands(land_env):
     )
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha="",
     )
     assert result.ok, result.stderr
@@ -1101,7 +1239,7 @@ def test_verify_step_failure_still_head_capped(land_env):
         "no-human/t-verifyfail-scope", extra_files={"FORCE_VERIFY_FAIL": "x"})
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1139,7 +1277,7 @@ def test_matching_tree_keeps_the_focused_gate(land_env, monkeypatch):
     head_sha = _pin_branch_head(land_env)
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=head_sha,
     )
     assert result.ok, result.stderr
@@ -1162,7 +1300,7 @@ def test_moved_base_counts_as_divergence(land_env, monkeypatch):
     land_env.advance_origin("moved-base-before-land")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=head_sha,
     )
     assert result.ok, result.stderr
@@ -1176,7 +1314,7 @@ def test_unknown_tested_commit_runs_the_full_gate(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-notested")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha="",
     )
     assert result.ok, result.stderr
@@ -1191,7 +1329,7 @@ def test_unresolvable_tested_commit_runs_the_full_gate(land_env, monkeypatch):
     bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=bogus,
     )
     assert result.ok, result.stderr
@@ -1210,7 +1348,7 @@ def test_full_gate_exit_code_5_is_not_a_landing_failure(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-nocollect")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha="",
     )
     assert result.ok, result.stderr
@@ -1224,7 +1362,7 @@ def test_land_result_message_names_the_gate(land_env, monkeypatch):
     branch, head_sha = land_env.cut_branch("no-human/t-message")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=head_sha,
     )
     assert result.ok, result.stderr
@@ -1278,7 +1416,7 @@ def test_push_advances_remote_ref(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-push")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -1295,7 +1433,7 @@ def test_aborts_when_tip_moved_during_land(land_env):
 
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, _before_push=_race,
     )
     assert not result.ok
@@ -1309,7 +1447,7 @@ def test_closes_pr_without_comment(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-close")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -1326,7 +1464,7 @@ def test_already_closed_pr_is_not_a_failure(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-alreadyclosed")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -1341,7 +1479,7 @@ def test_failure_removes_temp_worktree_and_keeps_awaiting_approval(land_env):
     before_worktrees = repo.list_worktrees()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1377,7 +1515,7 @@ def test_squash_conflict_leaves_no_worktree(land_env, monkeypatch):
     before_worktrees = repo.list_worktrees()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1405,7 +1543,7 @@ def test_squash_conflict_confined_to_the_manifest_lands(land_env):
                              tip_manifest + "# re-pinned by a concurrent landing\n")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, f"step={result.step}: {result.stderr}"
@@ -1436,7 +1574,7 @@ def test_squash_conflict_beyond_the_manifest_still_refuses(land_env):
     before = repo.list_worktrees()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1485,7 +1623,7 @@ def test_manifest_conflict_with_neither_backend_still_refuses(land_env):
     before = repo.list_worktrees()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1534,7 +1672,7 @@ def test_manifest_conflict_without_the_export_guard_now_lands(land_env):
                              tip_manifest + "# re-pinned by a concurrent landing\n")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, f"step={result.step}: {result.stderr}"
@@ -1594,7 +1732,7 @@ def test_manifest_conflict_without_the_export_guard_verify_fails_closed(
 
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1671,7 +1809,7 @@ def test_two_independent_prs_from_the_same_base_both_land_without_manual_conflic
 
     result_a = land_task(
         repo_path=str(clone_a), branch="no-human/t-pr-a", pr_url=land_env.pr_url,
-        task_id="pr-a", task_title="Add feature A", review_evidence="review PASS",
+        task_id="pr-a", task_title="feat: add feature A", review_evidence="review PASS",
         config=land_env.config,
     )
     print(f"$ nh approve pr-a  # step={result_a.step} ok={result_a.ok}")
@@ -1684,7 +1822,7 @@ def test_two_independent_prs_from_the_same_base_both_land_without_manual_conflic
     # round and no manual intervention.
     result_b = land_task(
         repo_path=str(clone_b), branch="no-human/t-pr-b", pr_url=land_env.pr_url,
-        task_id="pr-b", task_title="Add feature B", review_evidence="review PASS",
+        task_id="pr-b", task_title="feat: add feature B", review_evidence="review PASS",
         config=land_env.config,
     )
     print(f"$ nh approve pr-b  # step={result_b.step} ok={result_b.ok}")
@@ -1737,7 +1875,7 @@ def test_worktree_add_failure_leaves_no_worktree(land_env, monkeypatch):
     before_worktrees = repo.list_worktrees()
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok
@@ -1757,7 +1895,7 @@ def test_disabled_config_records_approval_only(land_env):
     cfg["approve_merge"]["enabled"] = False
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=cfg,
     )
     assert result.ok
@@ -1789,7 +1927,7 @@ async def test_landed_squash_reads_as_shipped_to_the_containment_probe(land_env)
     branch, head_sha = land_env.cut_branch("no-human/t-shipped-probe")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, result.stderr
@@ -1834,7 +1972,7 @@ def _make_cli_runner(db_path, config_data, monkeypatch) -> CliRunner:
 
 
 def _seed_land_task(db_path, status, *, repo_path, branch=None, pr_url=None,
-                    review_history=None, title="Fix the thing",
+                    review_history=None, title="fix: the thing",
                     task_id=None, base_branch=None,
                     attempt_branch=None, attempt_commit_sha=None) -> str:
     """`attempt_branch`/`attempt_commit_sha` seed one `attempts` row (branch
@@ -1950,7 +2088,7 @@ def test_cli_approve_completes_when_content_already_landed(land_env, tmp_path, m
     branch, head_sha = land_env.cut_branch("no-human/t-clilanded")
     first = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="firsttask", task_title="Add feature", review_evidence="review PASS",
+        task_id="firsttask", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert first.ok, first.stderr
@@ -2050,7 +2188,7 @@ async def test_api_approve_marks_done_with_landed_sha(land_env, api_store_client
     client, store = api_store_client
     branch, head_sha = land_env.cut_branch("no-human/t-apidone")
 
-    t = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t.acceptance_criteria = ["Should work"]
     await store.create_task(t)
     await store.merge_context(t.id, {
@@ -2081,13 +2219,13 @@ async def test_api_approve_completes_when_content_already_landed(land_env, api_s
     branch, head_sha = land_env.cut_branch("no-human/t-apilanded")
     first = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="firsttask", task_title="Add feature", review_evidence="review PASS",
+        task_id="firsttask", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert first.ok, first.stderr
     _git(land_env.clone, "fetch", "-q", "origin", "main")
 
-    t = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t.acceptance_criteria = ["Should work"]
     await store.create_task(t)
     await store.merge_context(t.id, {
@@ -2127,7 +2265,7 @@ async def test_api_approve_surfaces_land_failure(land_env, api_store_client, mon
         "no-human/t-apiverifyfail", extra_files={"FORCE_VERIFY_FAIL": "x"})
     before = land_env.remote_main_sha()
 
-    t = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t.acceptance_criteria = ["Should work"]
     await store.create_task(t)
     await store.merge_context(t.id, {
@@ -2184,7 +2322,7 @@ async def test_second_approve_during_merge_returns_409(land_env, api_store_clien
     client, store = api_store_client
     branch, head_sha = land_env.cut_branch("no-human/t-409")
 
-    t = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t.acceptance_criteria = ["Should work"]
     await store.create_task(t)
     await store.merge_context(t.id, {
@@ -2232,7 +2370,7 @@ async def test_approve_emits_merge_progress_events_in_order(land_env, api_store_
     client, store = api_store_client
     branch, head_sha = land_env.cut_branch("no-human/t-progress")
 
-    t = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t.acceptance_criteria = ["Should work"]
     await store.create_task(t)
     await store.merge_context(t.id, {
@@ -2276,7 +2414,7 @@ async def test_merge_lock_released_after_success_and_after_failure(
 
     # -- success path -------------------------------------------------------
     branch, head_sha = land_env.cut_branch("no-human/t-lock-ok")
-    t_ok = Task.new("Fix the thing", repo_path=str(land_env.clone))
+    t_ok = Task.new("fix: the thing", repo_path=str(land_env.clone))
     t_ok.acceptance_criteria = ["Should work"]
     await store.create_task(t_ok)
     await store.merge_context(t_ok.id, {
@@ -2296,7 +2434,7 @@ async def test_merge_lock_released_after_success_and_after_failure(
     # -- failure path -------------------------------------------------------
     branch2, head_sha2 = land_env.cut_branch(
         "no-human/t-lock-fail", extra_files={"FORCE_VERIFY_FAIL": "x"})
-    t_fail = Task.new("Fix the other thing", repo_path=str(land_env.clone))
+    t_fail = Task.new("fix: the other thing", repo_path=str(land_env.clone))
     t_fail.acceptance_criteria = ["Should work"]
     await store.create_task(t_fail)
     await store.merge_context(t_fail.id, {
@@ -2327,7 +2465,7 @@ async def test_stale_merge_claim_is_reclaimable(tmp_path):
     than `Store._MERGE_CLAIM_STALE_S` is reclaimable by a fresh `approve`."""
     store = await Store(tmp_path / "stale.db").connect()
     try:
-        t = Task.new("Fix the thing", repo_path="/tmp/does-not-matter")
+        t = Task.new("fix: the thing", repo_path="/tmp/does-not-matter")
         await store.create_task(t)
         stale_ts = time.time() - Store._MERGE_CLAIM_STALE_S - 60
         await store.merge_context(t.id, {"merge_in_progress": stale_ts})
@@ -2347,7 +2485,7 @@ async def test_fresh_merge_claim_blocks_a_second_claim(tmp_path):
     one, which is the whole point of the CAS."""
     store = await Store(tmp_path / "fresh.db").connect()
     try:
-        t = Task.new("Fix the thing", repo_path="/tmp/does-not-matter")
+        t = Task.new("fix: the thing", repo_path="/tmp/does-not-matter")
         await store.create_task(t)
         assert await store.claim_merge(t.id) is True
         assert await store.claim_merge(t.id) is False, \
@@ -2394,7 +2532,7 @@ def test_land_reconciles_two_reviewed_count_bumps(land_env):
     _advance_origin_with_counted_file(land_env, "other", bump=True)
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert result.ok, f"{result.step}: {result.stderr}"
@@ -2416,7 +2554,7 @@ def test_land_refuses_a_count_drift_that_is_not_merge_arithmetic(land_env):
     tip = _advance_origin_with_counted_file(land_env, "sloppy", bump=False)
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config,
     )
     assert not result.ok and result.step == "manifest"
@@ -2508,7 +2646,7 @@ def test_the_merge_gate_never_shells_out_to_the_frozen_nh_binary(
     branch, _head_sha = land_env.cut_branch("no-human/t-frozen")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
-        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
         config=land_env.config, tested_commit_sha=base_sha,
     )
     assert result.ok, result.stderr

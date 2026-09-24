@@ -77,6 +77,13 @@ class AgentEvent:
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    # A `tool_result`'s output text, IN PROCESS ONLY. The persisting sinks
+    # (`Orchestrator._agent_sink` / `_reviewer_sink`) copy kind/text/
+    # tool_name/tool_input/meta by name and never this field, so the no-text
+    # rule for the DB (`claude_backend`'s tool_result emit site) is unchanged.
+    # Its one reader is `diff_coverage.InspectionTracker`, which credits a
+    # truncated file shown in a directory listing. None when not captured.
+    output: str | None = field(default=None, repr=False)
 
 
 @dataclass

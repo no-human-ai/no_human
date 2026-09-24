@@ -2447,6 +2447,35 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # config write path. Never minted in, or accepted from, the browser.
         "instance_id": "",
     },
+    # Opt-IN capability-gap event sink (issue #20) — OFF, and it stays off
+    # until an operator turns it on. A separate channel from `telemetry`
+    # above, with its own pseudonym, so a recipient of one cannot join it to
+    # the other. What it can ever carry is a closed set of coarse capability
+    # classes, reason codes and constraints plus shape-checked ids (see
+    # `capability_gap._sendable`). Independent of `telemetry.enabled`.
+    "capability_gap": {
+        "enabled": False,
+        # "jsonl" writes to the spool file and nothing leaves the machine;
+        # "http" makes that file a spool drained to `endpoint`. Any other
+        # value resolves no destination, which disables the channel.
+        "sink": "jsonl",
+        # Spool DIRECTORY (empty: ~/.no_human); the filename is fixed.
+        "dir": "",
+        # Required by the "http" sink, and only honoured as https:// (or
+        # http:// on loopback) — see `capability_gap._valid_endpoint`.
+        "endpoint": "",
+        # Spool lines retained when the file is compacted. Compaction only
+        # runs once the file passes `capability_gap.COMPACT_AT_BYTES`, so an
+        # ordinary append never rewrites it.
+        "max_lines": 10000,
+        # Empty mints a uuid4 into ~/.no_human/capability-gap-id — never into
+        # config.yaml, and never telemetry's `instance_id`.
+        "instance_pseudonym": "",
+        # null classifies from `telemetry.environment()` (pytest, bench, CI, a
+        # checkout under a throwaway HOME -> synthetic; a checkout with a normal
+        # HOME counts as real). A bool forces the answer.
+        "synthetic": None,
+    },
 }
 
 
