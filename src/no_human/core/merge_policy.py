@@ -134,6 +134,15 @@ class GateFacts:
     # this field never affects `ready`; it is purely for the human-legible
     # detail (e.g. "ci: failure (File inventory)").
     ci_failed_checks: tuple[str, ...] = ()
+    # Required contexts that branch protection declares and that have NO
+    # entry on this head — i.e. they never ran. Non-empty ONLY when the
+    # required-ness lookup demonstrably succeeded (`pr_watcher.
+    # _required_check_names` returns an empty set on any failure), so this
+    # can never be produced by a forge/network outage — the outage case
+    # stays indistinguishable from "genuinely zero required checks" and both
+    # tolerate, per `_check_ci` below. Unlike `ci_failed_checks` (advisory
+    # only), this field is decision-bearing.
+    ci_missing_required: tuple[str, ...] = ()
     changed_paths: tuple[str, ...] = ()
     changed_lines: int = 0
     # True when the diff being evaluated itself edits the policy file
@@ -397,6 +406,19 @@ def _format_failed_checks(names: tuple[str, ...]) -> str:
 
 def _check_ci(facts: GateFacts, arg: Any) -> tuple[bool, str]:
     state = facts.ci_state
+    # State-independent and policy-independent: a head can report
+    # `ci_state == "success"` (e.g. only a non-required job ran) while one or
+    # more required contexts never ran at all. That is not "we couldn't see
+    # CI" (which `success_or_unknown` below deliberately tolerates, because a
+    # forge/network outage often reports as a CI failure and a false
+    # not-ready is worse than tolerating an unreported state) — it is "we saw
+    # CI, we know what was required, and those contexts are absent". A
+    # strict policy must never be more permissive than the default, so this
+    # fires under both `arg` values, before the state dispatch.
+    if facts.ci_missing_required:
+        return False, "ci: required checks never ran" + _format_failed_checks(
+            facts.ci_missing_required
+        )
     if arg == "success":
         if state == "success":
             return True, "ci: success"
@@ -515,6 +537,7 @@ def facts_from_evidence(
     repro_required: bool = False,
     tamper_adjudications: list[dict] | tuple[dict, ...] | None = None,
     ci_failed_checks: list[str] | tuple[str, ...] | None = None,
+    ci_missing_required: list[str] | tuple[str, ...] | None = None,
 ) -> GateFacts:
     """Adapt a `core.pr_evidence.PrEvidence` (plus the facts it deliberately
     does not carry — changed paths/lines, and the repro gate's verdict,
@@ -597,6 +620,10 @@ def facts_from_evidence(
         ci_failed_checks = getattr(evidence, "ci_failed_checks", None) or ()
     ci_failed_checks = tuple(str(n) for n in ci_failed_checks)
 
+    if ci_missing_required is None:
+        ci_missing_required = getattr(evidence, "ci_missing_required", None) or ()
+    ci_missing_required = tuple(str(n) for n in ci_missing_required)
+
     policy_changed_in_diff = any(
         pathglob.normalize_path(p) == POLICY_RELPATH for p in changed_paths
     )
@@ -616,6 +643,7 @@ def facts_from_evidence(
         verifiers_unavailable=verifiers_unavailable,
         ci_state=ci_state,
         ci_failed_checks=ci_failed_checks,
+        ci_missing_required=ci_missing_required,
         changed_paths=tuple(changed_paths),
         changed_lines=changed_lines,
         policy_changed_in_diff=policy_changed_in_diff,
