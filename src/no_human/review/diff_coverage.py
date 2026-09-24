@@ -7,10 +7,11 @@ configuration that the code under review can edit.
 
 from __future__ import annotations
 
-import ast
 import re
 import shlex
 from collections.abc import Iterable
+
+from .lint_evidence import unquote_git_path
 
 
 TRUSTED_COVERAGE_EXCLUSIONS: frozenset[str] = frozenset()
@@ -38,12 +39,10 @@ class DiffCoverageError(RuntimeError):
 
 
 def _unquote_path(token: str) -> str:
-    token = token.strip()
-    if token.startswith('"'):
-        try:
-            token = ast.literal_eval(token)
-        except (SyntaxError, ValueError):
-            token = token.strip('"')
+    # git quotes the WHOLE token including its a/b/ prefix and, when it does,
+    # C-escapes non-ASCII bytes octal-per-byte (e.g. "a/docs/\303\251val.md"),
+    # so the shared decoder must run before the prefix is stripped.
+    token = unquote_git_path(token.strip())
     if token.startswith(("a/", "b/")):
         token = token[2:]
     return token
@@ -178,7 +177,12 @@ def budget_diff(
     return rendered, cut_paths
 
 
-_PATH_TOKEN = re.compile(r"[A-Za-z0-9._/+@-]+")
+# `\w` is Unicode by default in Python and is a strict superset of
+# `A-Za-z0-9_`, so every ASCII token still tokenizes byte-identically; the
+# only newly admitted characters are non-ASCII word characters, needed so a
+# non-ASCII cut path (e.g. "docs/éval.md") is not split into fragments that
+# `_names_path` then rejects. Do not "simplify" this back to the ASCII class.
+_PATH_TOKEN = re.compile(r"[\w._/+@-]+")
 
 
 def _path_tokens(text: str) -> list[str]:
