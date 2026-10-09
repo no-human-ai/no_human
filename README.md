@@ -208,7 +208,11 @@ one shot, no daemon, no `~/.no_human` database, and not the queueing `nh
 review` CLI path. It judges the diff alone: unlike a local run, it collects no
 lint, wiring or type evidence and does not explore the repository. It posts a single pass/fail checklist comment with
 `file:line` citations, found by its own marker and updated in place on every
-run rather than creating a new one each time.
+run rather than creating a new one each time. That comment `@`-mentions the
+pull request's author (from the event payload, never the diff or the PR's
+own title/body) — GitHub notifies on the first run, which creates the
+comment, but not on later runs, which edit it in place, and the comment says
+plainly which case a given run was.
 
 ```yaml
 # .github/workflows/review-gate.yml
