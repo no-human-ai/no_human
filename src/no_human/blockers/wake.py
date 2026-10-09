@@ -1714,8 +1714,9 @@ class WakeWatcher:
             # own head branch to the landed sha (force-with-lease) BEFORE
             # pushing that same sha to the default branch, so the HEAD commit
             # is reachable from base and GitHub marks the PR MERGED — the
-            # MERGED rung above is the normal path for those (2026-10-09 PR
-            # #652 fix). PRs landed before that fix, and the legacy
+            # MERGED rung above is the normal path for those (PR #652,
+            # 2026-10-09, proved this mechanism empirically; the module fix
+            # itself landed separately). PRs landed before that fix, and the legacy
             # `_close_pr` fallback path (fired only when the forge doesn't
             # confirm MERGED), still land as a LOCAL squash with no
             # base-reachable HEAD, so GitHub reports CLOSED for those — this

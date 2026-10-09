@@ -709,8 +709,8 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         "exec:git push": Allowed(
             "your git remote — two pushes, in order: first the squashed "
             "sha force-with-lease onto the PR's OWN head branch "
-            "(`_push_pr_head`, :951), then the same sha, non-force, onto "
-            "the default branch (`land_task`, :1598). The head-branch push "
+            "(`_push_pr_head`, :1039), then the same sha, non-force, onto "
+            "the default branch (`land_task`, :1741). The head-branch push "
             "makes the PR's HEAD reachable from base so the forge reports "
             "MERGED rather than CLOSED",
             "user-invoked: only from `nh approve` / the board's "
@@ -718,22 +718,23 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         "exec:git ls-remote": Allowed(
             "your git remote — refs only; reads back that each of the two "
             "pushes above actually landed: the head-branch ref "
-            "(`_push_pr_head`, :946/:958) and the default-branch ref "
-            "(`land_task`, :1607)",
+            "(`_push_pr_head`, :1034/:1046) and the default-branch ref "
+            "(`land_task`, :1752)",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:gh": Allowed(
             "your GitHub host — `pr view --json state,mergedAt` "
-            "(`_forge_merge_state`, :904) to check whether the forge "
-            "already marked the PR MERGED after the head-branch push "
-            "above; only when it did NOT does `_close_pr`'s own "
-            "`pr view --json state` then `pr close` (:833/:842) run, as a "
-            "non-fatal fallback. This is not `gh pr merge`",
+            "(`_forge_merge_state`, :940, polled with backoff by "
+            "`_poll_forge_merge_state`) to check whether the forge already "
+            "marked the PR MERGED after the head-branch push above; only "
+            "when it did NOT does `_close_pr`'s own `pr view --json state` "
+            "then `pr close` (:872/:885) run, as a non-fatal fallback. "
+            "This is not `gh pr merge`",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:glab": Allowed(
             "your GitLab host — `mr view` then `mr close` (`_close_pr`, "
-            ":201/:209); closes the MR the squash landed. This is not "
+            ":850/:858); closes the MR the squash landed. This is not "
             "`glab mr merge`",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
@@ -742,10 +743,10 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         # a future dynamic exec added here.
         "exec:<dynamic>": Allowed(
             "`sys.executable` running the TARGET REPO's own "
-            "`scripts/export_guard.py` (`approve`/`verify`, :389/:436) and "
-            "`python -m pytest` over change-scoped tests (:459) — the "
-            "repo's own test suite can dial anywhere; this process does not "
-            "bound it",
+            "`scripts/export_guard.py` (`approve`/`verify`, :1396/:1604) "
+            "and `python -m pytest` over change-scoped (or full) tests "
+            "(:1654/:1670) — the repo's own test suite can dial anywhere; "
+            "this process does not bound it",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
     },

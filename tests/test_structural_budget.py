@@ -499,6 +499,20 @@ FROZEN_FUNCTION_LINES = {
     # which is why it went unnoticed. Measured on this tree with the scanner
     # below.
     "review/reviewer.py:_build_review_prompt": 347,
+    # 2026-10-09, "nh approve lands a PR as closed, not merged" send-back
+    # round: 283 -> 302 (+19). Two blocking review fixes landed in this one
+    # function. (1) A step-8 (default-branch push) failure after step 7
+    # (head-branch push) already succeeded used to leave the PR's head
+    # branch stuck at the unreviewed squash sha with no way to retry --
+    # every failure path now calls `_push_head_restore_note`, which attempts
+    # to push the head branch back to `expected_head` and only says "retry"
+    # when that restore itself succeeds. (2) The forge-merged check used to
+    # read `_forge_merge_state` exactly once right after the base push, but
+    # GitHub settles on MERGED asynchronously (~1s observed lag on PR #652)
+    # -- it now polls via `_poll_forge_merge_state` for up to
+    # `merge_poll_timeout_seconds` before falling back to a close. Measured
+    # on this tree with the scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 302,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -2296,11 +2310,16 @@ FROZEN_FILE_LINES = {
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
     # 2763 -> 2769 (+6): comment-only accuracy fix at the CLOSED rung in
-    # `_check_closed_pr` -- new landings now report MERGED (rung 1 completes
+    # `_check_open_pr` -- new landings now report MERGED (rung 1 completes
     # them) so the old "GitHub's merged flag is never true for our PRs"
     # claim no longer holds; no logic change ("nh approve lands a PR as
     # closed, not merged"). Measured on this tree.
-    "blockers/wake.py": 2769,
+    # 2769 -> 2770 (+1): the same comment, reworded again -- "2026-10-09 PR
+    # #652 fix" overstated what #652 itself did (it proved the MERGED-vs-
+    # CLOSED mechanism empirically; the module fix that acts on it landed
+    # separately, in this same ticket). Comment-only; no logic change.
+    # Measured on this tree.
+    "blockers/wake.py": 2770,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

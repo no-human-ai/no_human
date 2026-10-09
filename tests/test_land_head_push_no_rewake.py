@@ -19,9 +19,16 @@ watches for. Three guards:
      task does not fall into the CLOSED/escalation branch.
   3. With the PR still OPEN but otherwise nominal (no new comments, no
      merge conflict, CI green) — the shape right after the head push
-     lands and before the forge settles on MERGED — no rung fires.
-     Nothing in the ladder keys off the head sha itself, so a sha change
-     with no other signal is inert.
+     lands and before the forge settles on MERGED — no rung fires in
+     THIS test's configuration. Precisely: the CI_GATE rung (6, M6) does
+     key off the head sha — its gate object owns a once-per-head guard
+     (see `_check_ci_gate_integration`'s docstring in `wake.py`) — but it
+     is inert here only because these tests build `WakeWatcher` with
+     `config={}`, which leaves `self._ci_gate_gate` `None` (wired only
+     when `ci_gate.enabled` is set) and makes `_ci_gate_step` a no-op
+     before the gate is ever consulted. None of the OTHER rungs key off
+     the head sha at all, so with CI_GATE unwired, a sha change with no
+     other signal is inert.
 
 No real git repo needed — `WakeWatcher`'s own checkers are faked, the
 same idiom `tests/test_wake_pr_closed_repair.py` uses for the CLOSED
@@ -135,10 +142,14 @@ async def test_a_changed_pr_head_alone_triggers_no_review_round(store):
     still OPEN (the forge hasn't settled on MERGED yet) and the sha the
     forge is now looking at is the freshly-pushed landed squash commit —
     but nothing ELSE about the PR changed: no new human comments, no merge
-    conflict, CI green. No rung keys off the head sha by itself, so this
-    must be a complete no-op: no resume, no revision round, no event
-    beyond the routine PR-state observation `_check_open_pr` always does
-    for a still-open PR."""
+    conflict, CI green. This `WakeWatcher` is built with `config={}`, so
+    the CI_GATE rung (6) — the one rung whose gate object DOES key off
+    the head sha, via a once-per-head guard — stays unwired
+    (`self._ci_gate_gate is None`) and never fires; with it out of the
+    picture, no OTHER rung cares about the head sha at all, so this must
+    be a complete no-op: no resume, no revision round, no event beyond
+    the routine PR-state observation `_check_open_pr` always does for a
+    still-open PR."""
     t = await _task_awaiting_approval(store)
 
     async def _open_state(url):
