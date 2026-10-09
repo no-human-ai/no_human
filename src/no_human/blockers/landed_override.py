@@ -106,8 +106,12 @@ task, not a merge action — constraint #2 (the agent never merges) is
 untouched because there is no merge here to begin with. Closing the task's
 PR(s) after the DONE write (``pr_closeout.close_task_prs_on_completion``) is
 not a merge or a push either — it changes no code and no state the forge
-gates on, the same justification ``approve_merge._close_pr`` and the
-abandon path already stand on.
+gates on, the same justification the abandoned-draft close path
+(``comment_poster.close_pr``) already stands on. (As of PR #654,
+2026-10-09: ``vcs.approve_merge`` itself no longer closes any PR, landed or
+otherwise — a PR the forge reports CLOSED after a land is left as-is. That
+is an unrelated, narrower rule about the land flow specifically; it does
+not bear on this module's own closing of abandoned-draft PRs.)
 
 This is a HUMAN override of automated containment, not a containment pass:
 the audit event's text says so explicitly, and the event's ``kind`` —

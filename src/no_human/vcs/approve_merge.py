@@ -103,32 +103,35 @@ default branch onto that same sha, makes GitHub report MERGED.
                         back to the sha it carried before this run (leased
                         against the sha step 7 just pushed, via the same
                         `_push_pr_head` helper with its two sha arguments
-                        swapped) — otherwise a retry would re-resolve
+                        swapped) — otherwise a later run would re-resolve
                         `expected_head` from the LOCAL branch (still the old
                         reviewed head) while the remote head branch carries
                         the NEW, unreviewed squash sha, and its lease would
-                        fail forever. The result says "retry" only when
-                        that restore itself succeeds; if the restore also
-                        fails, it reports that the head branch is stuck and
-                        needs manual repair, not another `nh approve`. The
-                        PR is left OPEN either way — never MERGED, never
-                        closed, by this step.
+                        fail forever. The result reports the restore as
+                        done only when that restore push itself succeeds;
+                        if the restore also fails, it reports that the head
+                        branch is stuck and needs manual repair before the
+                        next `nh approve`. The PR is left OPEN either way —
+                        never MERGED, never closed, by this step.
   9. close_pr         — poll the forge (`gh pr view --json state,mergedAt` /
                         `glab mr view`) for up to `merge_poll_timeout_seconds`
-                        (default ~30s, with backoff) for it to report the PR
-                        MERGED — the normal outcome once step 7 updated its
-                        head, but GitHub's own merge bookkeeping lags the
-                        base-branch push by observably ~1s (PR #652), so a
-                        single immediate read risks seeing OPEN and closing
-                        a PR that was about to show MERGED, which is exactly
-                        the outcome this whole module exists to prevent.
-                        Only when the forge still does NOT report MERGED
-                        once that budget is exhausted does this fall back
-                        to the legacy close-without-comment path (a comment
-                        re-wakes the watcher — ticket b1fd13ca); idempotent
-                        on an already-closed/merged PR; reported as a
-                        non-fatal `warning` — the code is already on the
-                        default branch either way.
+                        (default 30s if unset/non-numeric/negative, with
+                        backoff) for it to report the PR MERGED — the normal
+                        outcome once step 7 updated its head, but GitHub's
+                        own merge bookkeeping lags the base-branch push by
+                        observably ~1s (PR #652), so a single immediate read
+                        risks seeing OPEN when the forge is seconds from
+                        reporting MERGED. Operator hard rule (2026-10-09,
+                        PR #654): a PR whose code lands must end MERGED on
+                        GitHub, never CLOSED — so when the forge still does
+                        NOT report MERGED once that budget is exhausted,
+                        this step NEVER closes the PR. It instead returns
+                        `ok=True` with a non-fatal `warning` naming the
+                        state the forge actually reported (or "CLOSED" if
+                        the PR was already closed, unmerged — left as-is,
+                        nothing reopens or closes it) and the landed sha —
+                        the code is already on the default branch either
+                        way.
 
 WHY ONLY RELEASE_MANIFEST.txt GETS THIS TREATMENT
 --------------------------------------------------
@@ -253,11 +256,13 @@ class LandResult:
     #: Human-readable reason behind ``gate`` — also folded into ``message``
     #: on success and into ``stderr`` on a tests-step failure.
     gate_reason: str = ""
-    #: Non-empty only when a successful land (``ok=True``) had to fall back
-    #: to the legacy close-without-comment path because the forge did not
-    #: report the PR MERGED after step 7's head-branch push — see step 9 in
-    #: the module docstring. Always folded into ``message`` as well, so a
-    #: caller that only prints ``message`` still sees it.
+    #: Non-empty only when a successful land (``ok=True``) landed on
+    #: ``default`` but the forge did NOT report the PR MERGED within the
+    #: step-9 poll budget after step 7's head-branch push — names the state
+    #: the forge actually reported (or "CLOSED" if the PR was already closed
+    #: unmerged) and the landed sha. Nothing is ever closed or reopened here
+    #: — see step 9 in the module docstring. Always folded into ``message``
+    #: as well, so a caller that only prints ``message`` still sees it.
     warning: str = ""
 
 
@@ -319,7 +324,7 @@ def _sh(args: list[str], *, cwd: Path | str, timeout: float | None = None,
     # tree hash or a returncode (`_git_config_value`, `_tree_of`, `land_task`,
     # `_land_in_worktree`), parses diagnostic text that is already tolerant of
     # a malformed body (`_declared_counts`, `reconcile_merge_count_drift`,
-    # `reconcile_commit_count_drift`, `_close_pr`'s `json.loads` under
+    # `reconcile_commit_count_drift`, `_forge_merge_state`'s `json.loads` under
     # `try/except`), or splits PATHS that are handed straight back to git
     # (`_ship_classified_paths`, `_unmerged_paths`, `_land_regenerate_manifest`'s
     # `git add -- <path>`) — where a replacement character can only make the
@@ -827,70 +832,6 @@ def _decide_gate(landed_tree: str, tested_commit_sha: str,
                      f"{tested_commit_sha[:12]}: conflict rounds or a moved base)")
 
 
-def _close_pr(pr_url: str, cwd: Path) -> str:
-    """Close *pr_url* without a comment. Idempotent, best-effort: any problem
-    (gh/glab missing, network, already handled) returns a note but never
-    raises — the code is already on the default branch by the time this
-    runs, so failing the task here would strand a landed change.
-
-    *cwd* is an explicit, guaranteed-existing directory (the caller's repo
-    path). `gh`/`glab` here only ever address `--repo`/`-R <slug>`
-    explicitly, so the directory is never actually read as a git repo — but
-    subprocess still requires it to exist, and the process-global cwd is
-    ambient state that other test modules mutate."""
-    parsed = parse_pr_url(pr_url)
-    if not parsed:
-        return "pr close skipped: could not parse PR URL"
-    forge, host, slug, number = parsed
-
-    if forge == "gitlab":
-        if not shutil.which("glab"):
-            return "mr close skipped: glab not found"
-        try:
-            state_proc = _sh(["glab", "mr", "view", str(number), "-R", slug],
-                              cwd=cwd, timeout=_GH_TIMEOUT_S)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return f"mr close skipped: could not read state ({exc})"
-        out = (state_proc.stdout or "").lower()
-        if "state:\tmerged" in out or "state:\tclosed" in out:
-            return ""
-        try:
-            close_proc = _sh(["glab", "mr", "close", str(number), "-R", slug],
-                              cwd=cwd, timeout=_GH_TIMEOUT_S)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return f"mr close failed (non-fatal): {exc}"
-        if close_proc.returncode != 0:
-            return f"mr close failed (non-fatal): {close_proc.stderr.strip()[:300]}"
-        return ""
-
-    if not shutil.which("gh"):
-        return "pr close skipped: gh not found"
-    repo_arg = f"{host}/{slug}"
-    state = ""
-    try:
-        state_proc = _sh(
-            ["gh", "pr", "view", str(number), "--repo", repo_arg, "--json", "state"],
-            cwd=cwd, timeout=_GH_TIMEOUT_S,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return f"pr close skipped: could not read state ({exc})"
-    if state_proc.returncode == 0:
-        try:
-            state = str(json.loads(state_proc.stdout).get("state") or "").upper()
-        except json.JSONDecodeError:
-            state = ""
-    if state in ("MERGED", "CLOSED"):
-        return ""
-    try:
-        close_proc = _sh(["gh", "pr", "close", str(number), "--repo", repo_arg],
-                          cwd=cwd, timeout=_GH_TIMEOUT_S)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return f"pr close failed (non-fatal): {exc}"
-    if close_proc.returncode != 0:
-        return f"pr close failed (non-fatal): {close_proc.stderr.strip()[:300]}"
-    return ""
-
-
 def _forge_merge_state(pr_url: str, cwd: Path) -> tuple[str, str]:
     """Read-only, best-effort: ask the forge whether *pr_url* is already
     MERGED. Returns ``(state, note)``.
@@ -899,18 +840,19 @@ def _forge_merge_state(pr_url: str, cwd: Path) -> tuple[str, str]:
     `MERGED` AND it also reports a non-empty `mergedAt` — GitHub's real API
     never produces `MERGED` with an empty `mergedAt`, but this helper treats
     that combination as NOT confirmed-merged anyway (conservative: an
-    ambiguous reading must fall through to the `_close_pr` fallback, never
-    skip it). Any other outcome returns the forge's literal state (`"OPEN"`,
-    `"CLOSED"`, or `""` if it could not be determined at all) with ``note``
-    explaining why (tool missing, network/timeout, unparseable JSON, or the
-    ambiguous MERGED-with-no-mergedAt case) — the caller folds ``note`` into
-    the fallback-close warning. Mirrors `_close_pr`'s cwd/exception contract
-    exactly: never raises.
+    ambiguous reading must fall through to the step-9 warning path, never
+    be read as a false positive). Any other outcome returns the forge's
+    literal state (`"OPEN"`, `"CLOSED"`, or `""` if it could not be
+    determined at all) with ``note`` explaining why (tool missing,
+    network/timeout, unparseable JSON, or the ambiguous MERGED-with-no-
+    mergedAt case) — the caller folds ``note`` into the non-MERGED warning.
+    Never raises.
 
-    *cwd* is an explicit, guaranteed-existing directory — see `_close_pr`'s
-    docstring for why (gh/glab address `--repo`/`-R <slug>` explicitly; the
-    directory is never read as a git repo, but subprocess still requires it
-    to exist)."""
+    *cwd* is an explicit, guaranteed-existing directory. `gh`/`glab` here
+    only ever address `--repo`/`-R <slug>` explicitly, so the directory is
+    never actually read as a git repo — but subprocess still requires it to
+    exist, and the process-global cwd is ambient state that other test
+    modules mutate."""
     parsed = parse_pr_url(pr_url)
     if not parsed:
         return "", "could not parse PR URL"
@@ -963,13 +905,36 @@ def _forge_merge_state(pr_url: str, cwd: Path) -> tuple[str, str]:
 # merged ASYNCHRONOUSLY relative to the base-branch push that makes it
 # mergeable (observed ~1s lag on PR #652) — a single immediate read can see
 # OPEN when the forge is seconds away from reporting MERGED, which would
-# trigger a fallback-close of a PR that was about to show merged. These are
+# falsely warn that a PR about to show merged was left open. These are
 # module globals (not literals inlined at the call site) so a test can lower
 # them for speed without needing to pass new `land_task` parameters through
 # every layer; production callers get the real ~30s budget by default.
 _MERGE_POLL_TIMEOUT_S = 30.0
 _MERGE_POLL_INITIAL_INTERVAL_S = 1.0
 _MERGE_POLL_MAX_INTERVAL_S = 8.0
+
+
+def _coerce_poll_timeout(value) -> float:
+    """Sanitize `config["approve_merge"]["merge_poll_timeout_seconds"]` into
+    a value `_poll_forge_merge_state` can always use safely. By the time
+    this runs, step 7 has already force-pushed the PR's head branch and
+    (per the call site in `_land_in_worktree`) step 8 has already pushed
+    `default` too — a config value that made `_poll_forge_merge_state`
+    raise (e.g. `None`, a non-numeric string, or `timeout <= 0`'s comparison
+    blowing up on a non-number) would propagate out of `land_task` as an
+    uncaught exception AFTER the code had already landed, which is strictly
+    worse than just falling back to the default budget. Missing, `None`,
+    non-numeric, and negative values all fall back to
+    `_MERGE_POLL_TIMEOUT_S`; `0` is kept as-is (a deliberate single
+    immediate read, same as `_poll_forge_merge_state`'s own `timeout <= 0`
+    contract)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return _MERGE_POLL_TIMEOUT_S
+    if number < 0:
+        return _MERGE_POLL_TIMEOUT_S
+    return number
 
 
 def _poll_forge_merge_state(
@@ -1067,21 +1032,21 @@ def _push_head_restore_note(repo: GitRepo, remote: str, branch: str, landed_sha:
     So on every step-8 failure this reuses `_push_pr_head` with its two sha
     arguments swapped — pushing `expected_head` back onto `branch`, leased
     against the `landed_sha` that step 7 just put there — to put the head
-    branch back where it was before this run touched it. "retry" is said
-    ONLY when that restore push itself succeeds; if it also fails, the head
-    branch is left stuck at `landed_sha` and this says so plainly, since a
-    retry would just fail again with the same stale-lease error and the
-    caller needs to know manual intervention (not another `nh approve`) is
-    required."""
+    branch back where it was before this run touched it. The success
+    wording below ("restored"/"retry") is said ONLY when that push itself
+    succeeds; if it also fails, the head branch is left stuck at
+    `landed_sha` and the returned text deliberately avoids both words — the
+    caller needs to know this is a landed-but-stuck-head state requiring
+    manual intervention, not a retryable failure."""
     restore_err = _push_pr_head(repo, remote, branch, expected_head, landed_sha)
     if restore_err:
         return (
             f" The PR head branch {branch} was already updated to "
-            f"{landed_sha[:12]}, and restoring it back to "
-            f"{expected_head[:12]} also FAILED ({restore_err}); the PR is "
-            f"left OPEN but its head branch is stuck at the unreviewed "
-            f"squash commit — fix the head branch by hand (do not just "
-            f"retry `nh approve`) before trying again.")
+            f"{landed_sha[:12]}; putting it back to {expected_head[:12]} "
+            f"failed too ({restore_err}); the PR head is now stuck at the "
+            f"unreviewed squash commit. The code HAS landed on {default} at "
+            f"{landed_sha[:12]}; the head branch needs manual intervention "
+            f"before the next `nh approve`.")
     return (
         f" The PR head branch {branch} was restored to "
         f"{expected_head[:12]} after the push to {default} failed; the PR "
@@ -1248,12 +1213,16 @@ def land_task(
     full_test_timeout = approve_cfg.get(
         "full_test_timeout_seconds", _DEFAULT_FULL_TEST_TIMEOUT_S)
     # Step 9's budget for `_poll_forge_merge_state` — see that function's
-    # docstring for why a single immediate read risks a premature fallback
-    # close. Configurable (like the timeouts above) so a caller with a
-    # slower forge integration can raise it; tests lower it to 0 (a single
-    # read, no sleeping) unless they're specifically exercising the poll.
-    merge_poll_timeout = approve_cfg.get(
-        "merge_poll_timeout_seconds", _MERGE_POLL_TIMEOUT_S)
+    # docstring for why a single immediate read risks a premature "not
+    # merged" warning. Configurable (like the timeouts above) so a caller
+    # with a slower forge integration can raise it; tests lower it to 0 (a
+    # single read, no sleeping) unless they're specifically exercising the
+    # poll. `_coerce_poll_timeout` absorbs a missing/`None`/non-numeric/
+    # negative config value into the default rather than letting it raise
+    # out of `land_task` AFTER main has already been pushed (see that
+    # helper's docstring).
+    merge_poll_timeout = _coerce_poll_timeout(
+        approve_cfg.get("merge_poll_timeout_seconds", _MERGE_POLL_TIMEOUT_S))
 
     # -- step 2: fetch + resolve the CURRENT default-branch tip ------------ #
     _step(on_step, "fetch")
@@ -1758,22 +1727,31 @@ def _land_in_worktree(
                    f"(saw {remote_sha or '(none)'})" + _push_head_restore_note(
                        repo, remote, branch, landed_sha, expected_head, default))
 
-    # -- step 9: forge-merged check; close only as a non-fatal fallback --- #
+    # -- step 9: forge-merged check; never closes or reopens the PR ------- #
+    # Operator hard rule (2026-10-09, PR #654): a PR whose code lands must
+    # end MERGED on GitHub, never CLOSED. The forge not reporting MERGED
+    # within the poll budget is therefore reported as a non-fatal warning,
+    # not acted on — nothing here closes, reopens, or otherwise mutates the
+    # PR; the landed code on `default` is the land's actual outcome.
     _step(on_step, "close_pr")
-    close_cwd = repo.path if repo.path.exists() else Path(tempfile.gettempdir())
-    state, note = _poll_forge_merge_state(pr_url, close_cwd, timeout=merge_poll_timeout)
+    poll_cwd = repo.path if repo.path.exists() else Path(tempfile.gettempdir())
+    state, note = _poll_forge_merge_state(pr_url, poll_cwd, timeout=merge_poll_timeout)
     msg = f"landed {landed_sha[:12]} onto {default}; gate: {gate_reason}"
     warning = ""
     if state == "MERGED":
         msg += "; PR reported MERGED by the forge"
-    else:
-        close_note = _close_pr(pr_url, close_cwd)
+    elif state == "CLOSED":
         warning = (
-            "the forge did not report this PR merged "
-            f"({note or state or 'state unknown'}) — closed it as a "
-            f"fallback; the code IS on {default}")
-        if close_note:
-            warning += f"; {close_note}"
+            f"the forge reports this PR CLOSED (not merged); it is left "
+            f"as-is — nothing reopens or closes it; the code IS on "
+            f"{default} at {landed_sha[:12]}")
+        msg += f"; WARNING: {warning}"
+    else:
+        seen = note or state or "state unknown"
+        warning = (
+            f"the forge did not report this PR merged within the poll "
+            f"budget ({seen}); the PR is left OPEN — nothing closes it; "
+            f"the code IS on {default} at {landed_sha[:12]}")
         msg += f"; WARNING: {warning}"
     return LandResult(ok=True, step="close_pr", branch=branch, pr_url=pr_url,
                       reconciled=reconciled_note, gate=gate, gate_reason=gate_reason,

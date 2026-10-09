@@ -510,9 +510,21 @@ FROZEN_FUNCTION_LINES = {
     # read `_forge_merge_state` exactly once right after the base push, but
     # GitHub settles on MERGED asynchronously (~1s observed lag on PR #652)
     # -- it now polls via `_poll_forge_merge_state` for up to
-    # `merge_poll_timeout_seconds` before falling back to a close. Measured
-    # on this tree with the scanner below.
-    "vcs/approve_merge.py:_land_in_worktree": 302,
+    # `merge_poll_timeout_seconds` before falling back to a close.
+    # 302 -> 311 (+9), same PR, "nh approve must never close a landed PR"
+    # follow-up: the (2) fallback above was itself an operator-rule
+    # violation -- a landed PR must end MERGED, never CLOSED. Step 9 no
+    # longer closes anything when the poll budget is exhausted; it now
+    # branches on the forge-reported state (MERGED / CLOSED / neither) and
+    # returns `ok=True` with a non-fatal warning naming the state and the
+    # landed sha in every non-MERGED case, which is what grew the function.
+    # `_coerce_poll_timeout` (the `merge_poll_timeout_seconds` None/
+    # non-numeric/negative guard) lives in `land_task`, not in this
+    # function, so it isn't part of this delta. Cyclomatic complexity is
+    # unchanged at 41 (still under the 60 function-cc ceiling, so no
+    # `FROZEN_FUNCTION_CC` entry is needed). Measured on this tree with the
+    # scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 311,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -2319,7 +2331,14 @@ FROZEN_FILE_LINES = {
     # CLOSED mechanism empirically; the module fix that acts on it landed
     # separately, in this same ticket). Comment-only; no logic change.
     # Measured on this tree.
-    "blockers/wake.py": 2770,
+    # 2770 -> 2773 (+3), same ticket, "nh approve must never close a landed
+    # PR" follow-up: the same comment was wrong again -- it still blamed a
+    # "legacy `_close_pr` fallback path" for the CLOSED-but-content-landed
+    # population, but that fallback-close path is now deleted (PR #654);
+    # `land_task` never closes a PR. Reworded to say only what the code
+    # does: a CLOSED state seen here always predates this watcher's poll.
+    # Comment-only; no logic change. Measured on this tree.
+    "blockers/wake.py": 2773,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

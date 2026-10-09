@@ -699,43 +699,49 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
                   "`gh pr view` above"),
     },
     # `nh approve` merges the PR: a local squash commit as the operator
-    # identity, then a push and PR close. Entered ONLY from `nh approve` / the
-    # board's "Approve and merge" button (`land_task`) — never from an agent
+    # identity, then a push and a read-only forge-state poll. Entered ONLY
+    # from `nh approve` / the board's "Approve and merge" button
+    # (`_land_in_worktree`, called by `land_task`) — never from an agent
     # session (constraint #2, docs/security.md §2). This is NOT `gh pr merge`
     # / `glab mr merge`: the merge itself is a local `git merge --squash`
-    # (see the GIT_SUBCOMMANDS["merge"] row below), and gh/glab here only
-    # read PR state and close the already-landed PR.
+    # (see the GIT_SUBCOMMANDS["merge"] row below). Operator hard rule
+    # (2026-10-09, PR #654): a PR whose code lands must end MERGED, never
+    # CLOSED, so this module never calls `pr close` / `mr close` at all —
+    # gh/glab here only ever READ PR state.
     "vcs/approve_merge.py": {
         "exec:git push": Allowed(
             "your git remote — two pushes, in order: first the squashed "
             "sha force-with-lease onto the PR's OWN head branch "
-            "(`_push_pr_head`, :1039), then the same sha, non-force, onto "
-            "the default branch (`land_task`, :1741). The head-branch push "
-            "makes the PR's HEAD reachable from base so the forge reports "
-            "MERGED rather than CLOSED",
+            "(`_push_pr_head`, :1004), then the same sha, non-force, onto "
+            "the default branch (`_land_in_worktree`, :1710). The "
+            "head-branch push makes the PR's HEAD reachable from base so "
+            "the forge reports MERGED rather than CLOSED",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:git ls-remote": Allowed(
             "your git remote — refs only; reads back that each of the two "
             "pushes above actually landed: the head-branch ref "
-            "(`_push_pr_head`, :1034/:1046) and the default-branch ref "
-            "(`land_task`, :1752)",
+            "(`_push_pr_head`, :999/:1011) and the default-branch ref "
+            "(`_land_in_worktree`, :1721)",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:gh": Allowed(
-            "your GitHub host — `pr view --json state,mergedAt` "
-            "(`_forge_merge_state`, :940, polled with backoff by "
-            "`_poll_forge_merge_state`) to check whether the forge already "
-            "marked the PR MERGED after the head-branch push above; only "
-            "when it did NOT does `_close_pr`'s own `pr view --json state` "
-            "then `pr close` (:872/:885) run, as a non-fatal fallback. "
-            "This is not `gh pr merge`",
+            "your GitHub host — `pr view --json state,mergedAt`, READ-ONLY "
+            "(`_forge_merge_state`, :835, call at :882; polled with "
+            "backoff by `_poll_forge_merge_state`) to check whether the "
+            "forge already marked the PR MERGED after the head-branch push "
+            "above. When it did not within the poll budget, `land_task` "
+            "still returns `ok=True` with a warning naming the state and "
+            "the landed sha — nothing here ever calls `pr close` or "
+            "`pr merge`",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:glab": Allowed(
-            "your GitLab host — `mr view` then `mr close` (`_close_pr`, "
-            ":850/:858); closes the MR the squash landed. This is not "
-            "`glab mr merge`",
+            "your GitLab host — `mr view`, READ-ONLY (`_forge_merge_state`, "
+            ":865) to check whether the forge already marked the MR MERGED "
+            "after the head-branch push above; same no-close/no-reopen "
+            "contract as the `gh` entry above — nothing here ever calls "
+            "`mr close` or `mr merge`",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         # Per vcs/manifest_repair.py's precedent, the `<dynamic>` bucket is
@@ -743,9 +749,9 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         # a future dynamic exec added here.
         "exec:<dynamic>": Allowed(
             "`sys.executable` running the TARGET REPO's own "
-            "`scripts/export_guard.py` (`approve`/`verify`, :1396/:1604) "
+            "`scripts/export_guard.py` (`approve`/`verify`, :1396/:1573) "
             "and `python -m pytest` over change-scoped (or full) tests "
-            "(:1654/:1670) — the repo's own test suite can dial anywhere; "
+            "(:1623/:1639) — the repo's own test suite can dial anywhere; "
             "this process does not bound it",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),

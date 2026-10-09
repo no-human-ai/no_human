@@ -1716,16 +1716,19 @@ class WakeWatcher:
             # is reachable from base and GitHub marks the PR MERGED — the
             # MERGED rung above is the normal path for those (PR #652,
             # 2026-10-09, proved this mechanism empirically; the module fix
-            # itself landed separately). PRs landed before that fix, and the legacy
-            # `_close_pr` fallback path (fired only when the forge doesn't
-            # confirm MERGED), still land as a LOCAL squash with no
-            # base-reachable HEAD, so GitHub reports CLOSED for those — this
-            # branch, and the git-content probe below, stay for exactly that
-            # population. Trusting the CLOSED flag alone escalated every
-            # successful task in that population (SCRUM-68 follow-up). Before
-            # escalating, ask git (not GitHub) whether the branch's content is
-            # actually present on its base — that's true regardless of how
-            # the commit graph got there.
+            # itself landed separately). PRs landed before that fix still
+            # land as a LOCAL squash with no base-reachable HEAD, so GitHub
+            # reports CLOSED for those — this branch, and the git-content
+            # probe below, stay for exactly that population. (As of PR #654,
+            # 2026-10-09: `land_task` itself never closes a PR — a PR the
+            # forge already reports CLOSED, unmerged, is left as-is, so a
+            # CLOSED state seen here always predates this watcher's own poll
+            # and is never something `land_task` just did.) Trusting the
+            # CLOSED flag alone escalated every successful task in that
+            # population (SCRUM-68 follow-up). Before escalating, ask git
+            # (not GitHub) whether the branch's content is actually present
+            # on its base — that's true regardless of how the commit graph
+            # got there.
             # FOR THE PR-OUTCOME RECORD ONLY — the escalation behaviour below is
             # deliberately unchanged.
             #
