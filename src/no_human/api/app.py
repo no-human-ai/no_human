@@ -35,8 +35,8 @@ if TYPE_CHECKING:  # import-cycle-free: the eval package is loaded lazily below
 
 import httpx
 from fastapi import (
-    FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket,
-    WebSocketDisconnect,
+    BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile,
+    WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -1063,6 +1063,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
           status_code=201)
 async def split_task(
     task_id: str, body: SplitRequest, request: Request,
+    background_tasks: BackgroundTasks,
 ) -> list[TaskSummaryOut]:
     """Split a PENDING over-scope task into 2-8 independent child tasks.
 
@@ -1105,7 +1106,7 @@ async def split_task(
     # likewise both pass the entry guard and both create child sets. By moving
     # the parent off PENDING FIRST, the loser of either race sees the CAS refuse
     # (rowcount 0 -> None) and creates NO children.
-    from ..blockers import human_event
+    from ..blockers import close_draft_pr_on_cancel, human_event
     n = len(drafts)
     reason = f"split into {n} sub-tasks"
     prior_status = task.status
@@ -1170,6 +1171,11 @@ async def split_task(
         "task_id": task.id,
         "tasks": [t.model_dump() for t in tasks],
     })
+    # The parent's draft PR close-out talks to the forge, so it runs after the
+    # response is sent: the split never waits on the network.
+    background_tasks.add_task(
+        close_draft_pr_on_cancel, store, task, reason=reason,
+        config=getattr(request.app.state, "config", None))
     return out
 
 
@@ -2240,7 +2246,8 @@ async def resume_task(
 
 @app.post("/api/tasks/{task_id}/cancel")
 async def cancel_task(
-    task_id: str, request: Request, body: CancelRequest | None = None,
+    task_id: str, request: Request, background_tasks: BackgroundTasks,
+    body: CancelRequest | None = None,
 ) -> dict[str, Any]:
     """Cancel a task (sets to FAILED). `body` is optional so the CLI's and
     the board's pre-existing no-reason POST keep working unchanged; when the
@@ -2253,7 +2260,7 @@ async def cancel_task(
             status_code=409,
             detail=f"task is already {task.status.value!r}",
         )
-    from ..blockers import human_event
+    from ..blockers import close_draft_pr_on_cancel, human_event
     prior_status = task.status
     prior_blocker = task.blocker if isinstance(task.blocker, dict) else None
     reason = (body.reason if body else None) or ""
@@ -2317,6 +2324,11 @@ async def cancel_task(
     tasks = await _board_tasks(store, scheduler=_sched(request))
     await _mgr.broadcast({"type": "task_updated", "task_id": task.id,
                           "tasks": [t.model_dump() for t in tasks]})
+    # The draft PR close-out talks to the forge, so it runs after the response
+    # is sent: the cancel never waits on the network.
+    background_tasks.add_task(
+        close_draft_pr_on_cancel, store, task, reason=reason,
+        config=getattr(request.app.state, "config", None))
     return {"ok": True, "message": f"Cancelled {task_id[:8]}"}
 
 
@@ -3945,10 +3957,15 @@ async def worker_status(request: Request) -> dict[str, Any]:
         # `tick_stalled` is computed from timestamps inside `health_snapshot`
         # (`since_tick > stall_after`, `stall_after` >= 60s), so it only trips
         # after that threshold has elapsed since the last tick. `lease_lost`
-        # closes that earlier window immediately — the tick that raised
-        # `PoolLeaseLost` already knows dispatch is dead, well before
+        # closes that earlier window immediately — the tick that latched it
+        # already knows dispatch is dead, well before
         # `tick_stalled` would notice the same thing on its own.
         and not out.get("lease_lost")
+        # A refresh currently failing (non-latching, #222): dispatch is
+        # suspended this tick because the refresh did not complete. Not green,
+        # even before it latches `lease_lost` at the `_LEASE_REFRESH_TOLERANCE_S`
+        # bound; a later successful refresh clears it and health goes green.
+        and not out.get("lease_refresh_failed")
     )
     return out
 

@@ -15,8 +15,8 @@ applied; exit 1 with `VERDICT=FAIL` means drift and/or an unfixable citation
 remains; exit 2 means the checker itself failed to import/parse. Stdout
 carries `DRIFT: <doc> \\`old\\` -> \\`new\\` (re-anchoring|would re-anchor)`
 per fixable citation, `FAIL: <doc> \\`raw\\` — <reason>` per one the script
-will not guess at (occurs zero or more-than-once), and `applied N
-re-anchor(s)` when `--apply` actually wrote files.
+will not guess at (occurs zero or more-than-once), and `Applied N
+re-anchor(s).` when `--apply` actually wrote files.
 
 Deliberately the INVERSE of `structural_budget.py`'s "FAIL-OPEN, ALWAYS"
 doctrine: fail-open (`Status.INAPPLICABLE`) only in the two cases this
@@ -67,7 +67,7 @@ _FAIL_RE = re.compile(
     r"^FAIL: (?P<doc>\S+) `(?P<raw>.*?)` — (?P<reason>.*)$",
     re.MULTILINE,
 )
-_APPLIED_RE = re.compile(r"^applied (\d+) re-anchor\(s\)\s*$", re.MULTILINE)
+_APPLIED_RE = re.compile(r"^[Aa]pplied (\d+) re-anchor\(s\)\.?\s*$", re.MULTILINE)
 #: The ONE `FAIL:` shape `scripts/reanchor_citations.py` prints that never
 #: names a citation at all: `_load_checker()` raised before `plan()` ever
 #: ran (confirmed against the script's own `main()`, which prints this exact
@@ -209,7 +209,7 @@ def _doc_path(doc_key: str) -> str:
 def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
     """Pure, exhaustive, FAIL-CLOSED translation of one
     `reanchor_citations.py` invocation — `--check` or `--apply`, both
-    produce the same `VERDICT=`/`DRIFT:`/`FAIL:`/`applied N` vocabulary this
+    produce the same `VERDICT=`/`DRIFT:`/`FAIL:`/`Applied N` vocabulary this
     parses — into a `CitationOutcome`.
 
     See the module docstring for why this keys off the `VERDICT=` marker
@@ -283,9 +283,9 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
         if drifts:
             # Self-contradictory shape: the script claims `VERDICT=OK` (rc 0
             # already checked above) yet also printed `DRIFT:` lines for
-            # citations it never confirmed applying (no `applied N
-            # re-anchor(s)` marker). The real script never emits this combo —
-            # a resolved drift always earns its `applied` line before
+            # citations it never confirmed applying (no `Applied N
+            # re-anchor(s).` marker). The real script never emits this combo —
+            # a resolved drift always earns its `Applied` line before
             # `VERDICT=OK` — so a parser that saw it anyway is looking at
             # output this contract does not define. Trusting the "OK" half
             # would report `Status.CLEAN` ("rewrote nothing", per
@@ -295,7 +295,7 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
             return CitationOutcome(
                 Status.UNKNOWN, docs=docs,
                 detail=f"VERDICT=OK with unresolved DRIFT lines and no "
-                       f"'applied' marker: {stdout.strip()}")
+                       f"'Applied' marker: {stdout.strip()}")
         return CitationOutcome(Status.CLEAN, detail=stdout.strip())
 
     # verdict == "FAIL"

@@ -62,11 +62,11 @@ _CI_GREEN_POLL_TIMEOUT_SECONDS = 25
 # Platform-layer CI failures: the job never ran the code, so a red check
 # carrying this signature is INFRA, not a coder fix round (live incident
 # 2026-08-11: a GitHub Actions billing outage turned every review-PASSED
-# task into escalated_ci at the finish line). The match is ONE full
-# sentence, deliberately: partial phrases ("the job was not started
-# because…") also appear in unrelated failures and in pytest echoes of this
-# very corpus, and a match here SUPPRESSES reporting — overmatching is the
-# dangerous direction. An unrecognized failure is always treated as real.
+# task into escalated_ci at the finish line). A match SUPPRESSES reporting,
+# so overmatch is the danger: the billing sentence counts anywhere; the
+# runner-acquisition sentence only at a line start, since such phrases also
+# appear in unrelated failures and in pytest echoes of this corpus. An
+# unrecognized failure is always treated as real.
 # A job GitHub blocks at START (billing wall) never runs, so the job-LOG API
 # (the Jenkins consoleText fetcher) returns NOTHING for it — the failure text
 # lives only in the check-run ANNOTATION (verified via `gh api
@@ -77,6 +77,13 @@ _CI_GREEN_POLL_TIMEOUT_SECONDS = 25
 _CI_INFRA_RE = re.compile(
     r"(?i)recent account payments have failed or your "
     r"spending limit needs to be increased"
+    # A runner the job could never acquire is infra, not the coder's bug —
+    # telling the coder to "fix" a runner outage burns a fix round (#429).
+    # Anchored to the start of a line (re.M): a test whose output merely
+    # echoes this sentence must not read as a runner outage.
+    r"|^[ \t]*the job was not started because it repeatedly failed to be "
+    r"acquired",
+    re.M,
 )
 
 # Sentinel returned by `_check_approval_pr_comments(resume=False)`: comments
@@ -2419,37 +2426,50 @@ class WakeWatcher:
             # above, kept on a separate key so infra classification never
             # suppresses a later REAL failure's round-counting.
             return None
-        excerpt = ""
-        if self._ci_log is not None and failing[0].get("link"):
-            try:
-                excerpt = await self._ci_log(failing[0]["link"])
-            except Exception:  # noqa: BLE001 — the log is a bonus, not a dependency
-                excerpt = ""
-        annotation = ""
-        if not excerpt and self._ci_annotations is not None:
-            # A job blocked at START never produces a log at all (see
-            # `_CI_INFRA_RE` above), so the annotation channel is only worth
-            # trying when the log came back empty — a log that DID come back
-            # already carries whatever text there is to classify.
-            try:
-                annotation = await self._ci_annotations(
-                    url, failing[0].get("name", ""))
-            except Exception:  # noqa: BLE001 — evidence is a bonus, not a dependency
-                annotation = ""
-        # Both fetches above are network awaits — re-verify terminal-ness
-        # before ANY write in this rung (SCRUM-68; the round counter, the
-        # escalation, and the resume below all mutate the task).
+        # #429 (review): classify infra only when EVERY failing check is a
+        # platform-layer outage. A runner that cannot be acquired may take out
+        # one matrix leg while another leg fails for real; keying off
+        # `failing[0]` alone would swallow that real failure. Check each failing
+        # job's log (or its annotation when the log is empty) and require
+        # `_CI_INFRA_RE` on all of them.
+        all_infra = True
+        real_job = failing[0]
+        for job in failing:
+            excerpt = ""
+            if self._ci_log is not None and job.get("link"):
+                try:
+                    excerpt = await self._ci_log(job["link"])
+                except Exception:  # noqa: BLE001 — the log is a bonus, not a dependency
+                    excerpt = ""
+            annotation = ""
+            if not excerpt and self._ci_annotations is not None:
+                # A job blocked at START never produces a log at all (see
+                # `_CI_INFRA_RE` above), so the annotation channel is only worth
+                # trying when the log came back empty.
+                try:
+                    annotation = await self._ci_annotations(url, job.get("name", ""))
+                except Exception:  # noqa: BLE001 — evidence is a bonus, not a dependency
+                    annotation = ""
+            if not (_CI_INFRA_RE.search(excerpt)
+                    or _CI_INFRA_RE.search(annotation)):
+                all_infra = False
+                # The send-back below shows THIS job's excerpt/annotation, so
+                # it must also carry this job's link.
+                real_job = job
+                break
+        # The fetches above are network awaits — re-verify terminal-ness before
+        # ANY write in this rung (SCRUM-68; the round counter, the escalation,
+        # and the resume below all mutate the task).
         if await self._is_terminal(task):
             return None
-        if _CI_INFRA_RE.search(excerpt) or _CI_INFRA_RE.search(annotation):
-            # The run failed at the platform layer (billing / runner
-            # provisioning), so it says nothing about the code: no fix round,
-            # no send-back, no escalation. pr_ci_last_sig stays unset so a
-            # later healthy build is evaluated fresh; pr_ci_infra_sig (its own
-            # key, checked above) makes re-polling this build free. An empty
-            # log AND a missing/non-matching annotation falls through to the
-            # real-failure path — infra must be positively identified on
-            # EITHER channel, never assumed (fail closed).
+        if all_infra:
+            # Every failing check is a platform-layer outage (billing / runner
+            # provisioning), so the build says nothing about the code: no fix
+            # round, no send-back, no escalation. pr_ci_last_sig stays unset so
+            # a later healthy build is evaluated fresh; pr_ci_infra_sig (its own
+            # key, checked above) makes re-polling this build free. A single
+            # check that is NOT positively infra on either channel drops to the
+            # real-failure path — infra is never assumed (fail closed).
             task.context = await self.store.merge_context(
                 task.id, {"pr_ci_infra_sig": signature})
             await self._emit(
@@ -2471,7 +2491,7 @@ class WakeWatcher:
                 f"round(s). Failing: {names}. Advise, or take over?"
             )
             data["root_cause_hypothesis"] = f"PR CI failing: {names}"
-            data["evidence"] = (excerpt or annotation or failing[0].get("link", ""))[:1500]
+            data["evidence"] = (excerpt or annotation or real_job.get("link", ""))[:1500]
             task.blocker = data
             await self.store.update_task_columns(task)
             await self.store.set_status(task, TaskStatus.ESCALATED, validate=False)
@@ -2483,7 +2503,7 @@ class WakeWatcher:
 
         message = (
             f"The PR's CI is failing. Check(s): {names}.\n"
-            f"Link: {failing[0].get('link', '')}\n"
+            f"Link: {real_job.get('link', '')}\n"
             + (f"Log excerpt:\n```\n{excerpt}\n```\n" if excerpt
                else f"Annotation:\n```\n{annotation}\n```\n" if annotation else "")
             + "Fix the cause on the same branch; the push updates the PR and "

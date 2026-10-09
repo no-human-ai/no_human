@@ -68,22 +68,22 @@ _PATH_COUPLED_VARIANTS = {
 
 # The 4 sites the AC2 classifier flags that are manually verified safe:
 #   - test_orchestrator_factory_parity.py:84 and
-#     test_frozen_snapshot_guard.py:1037 — both `await store.close()` calls
+#     test_frozen_snapshot_guard.py:1061 — both `await store.close()` calls
 #     sit inside `with contextlib.suppress(...)`, in a helper that unwinds a
 #     real-worker boot, not a test body.
 #   - test_token_split_schema.py:381 — `store = await Store(...).connect()`
 #     is immediately followed by `await store.close()` with zero intervening
 #     statements, so there is no exception window in which the close can be
 #     skipped.
-#   - test_frozen_snapshot_guard.py:1029 — a false positive of the substring
+#   - test_frozen_snapshot_guard.py:1053 — a false positive of the substring
 #     classifier: the matched text sits inside a docstring describing the
 #     mechanism above ("...skips its `await store.close()`. Left alone..."),
 #     not executable code.
 _KNOWN_SAFE_BARE_CLOSES = {
     "tests/test_orchestrator_factory_parity.py:84",
     "tests/test_token_split_schema.py:381",
-    "tests/test_frozen_snapshot_guard.py:1029",
-    "tests/test_frozen_snapshot_guard.py:1037",
+    "tests/test_frozen_snapshot_guard.py:1053",
+    "tests/test_frozen_snapshot_guard.py:1061",
 }
 
 

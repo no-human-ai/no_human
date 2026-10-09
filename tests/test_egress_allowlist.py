@@ -682,6 +682,13 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
                            _ON + "polled while a task waits on CI or review"),
         "exec:glab": Allowed("your GitLab host — same",
                              _ON + "polled while a task waits on CI or review"),
+        "exec:git fetch": Allowed(
+            "your git remote — refs only; `git fetch origin "
+            "+refs/heads/<branch>:refs/remotes/origin/<branch>` in "
+            "`_resolve_ref_or_commit`, only when the delivery branch does "
+            "not resolve locally",
+            _ON + "the landed-content check (`branch_landed_commit`) while a "
+                  "task waits on its PR"),
         # The one channel here that is NOT the git host.
         "http:httpx": Allowed(
             "the CI server named in a check's details_url — fetches "

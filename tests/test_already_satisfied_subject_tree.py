@@ -848,3 +848,186 @@ def test_the_sibling_branch_decision_exists_in_exactly_one_place():
     assert src.count("_already_satisfied_subject") >= 2
     git_src = Path(git_module.__file__).read_text(encoding="utf-8")
     assert git_src.count("remote_branches_containing") >= 1
+
+
+async def test_a_pushed_but_unmergeable_claim_is_refused_not_parked(
+    bare_repo, tmp_path, store
+):
+    """#304: a claim whose satisfying commit is pushed and reachable but does
+    NOT merge into the moved base must be REFUSED, not parked in
+    awaiting_approval. a1331ff4 re-claimed an earlier attempt's branch that
+    conflicted with current trunk; the claim was accepted and the task sat in
+    "needs you" with nothing `nh approve --ready` could offer. The round is
+    not a success — it is sent back to re-cut, before the reviewer runs."""
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        # A delivery branch off the initial commit that edits calc.py's one
+        # line, pushed — so `_already_satisfied_subject` sees it as shippable.
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "calc.py").write_text(
+            "def add(a, b):\n    return a + b + 10  # branch edit\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "branch edits the same line")
+        _git(bare_repo, "push", "-u", "origin", stem)
+        # Base moves with a CONFLICTING edit to the same line and is pushed, so
+        # the branch no longer merges into trunk.
+        _git(bare_repo, "checkout", "main")
+        (bare_repo / "calc.py").write_text(
+            "def add(a, b):\n    return a + b + 20  # main moved\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "trunk moves after the branch was cut")
+        _git(bare_repo, "push", "origin", "main")
+        # HEAD back on the branch: the sha the claim is judged against.
+        _git(bare_repo, "checkout", stem)
+        return stem
+
+    outcome, _task, reviewer, events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    assert outcome.status is TaskStatus.FAILED          # was AWAITING_APPROVAL
+    assert reviewer.calls == []                          # refused before the reviewer
+    assert "conflicts with the current base" in outcome.detail
+    assert "calc.py" in outcome.detail     # the coder is told WHICH files conflict
+    assert "Re-cut" in outcome.detail
+    assert any(e.get("kind") == "already_satisfied_unlandable" for e in events)
+
+
+async def test_an_undeterminable_merge_escalates_rather_than_recutting(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """#304 review (eyalgolan): `unknown` means the merge question could not be
+    ASKED (most often git < 2.38 without `merge-tree --write-tree`), not that
+    the delivery conflicts. Sending it to the coder would spend every attempt
+    re-cutting work that may merge fine, then end FAILED. Fail closed to a
+    HUMAN instead: escalate, keep the re-cut feedback only for a real conflict.
+    The task still never parks as approvable, which is what #304 asks for."""
+    from no_human.vcs.landability import Landability
+
+    async def _unknown(repo_path, branch, *, base_hint=""):
+        return Landability("unknown", "", "", (), "merge-tree unavailable")
+
+    monkeypatch.setattr(orchestrator_module, "check_landability", _unknown)
+
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "feature.py").write_text("def feat():\n    return 1\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "branch adds a new file")
+        _git(bare_repo, "push", "-u", "origin", stem)
+        _git(bare_repo, "checkout", stem)
+        return stem
+
+    outcome, _task, reviewer, events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    assert outcome.status is TaskStatus.ESCALATED         # to a human, not FAILED
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL  # never parked (#304)
+    assert reviewer.calls == []                           # decided before the reviewer
+    assert "merge-tree unavailable" in outcome.detail     # the probe detail reaches the human
+    # The reviewer never ran, so the text must not call the claim verified, and
+    # `nh approve` cannot land an ESCALATED task, so it must not promise that.
+    assert "verified" not in outcome.detail
+    assert "to land" not in outcome.detail
+    assert "the claim was not reviewed" in outcome.detail
+    assert "nh reply" in outcome.detail                   # the actionable next step
+    assert any(e.get("kind") == "already_satisfied_landability_unknown"
+               for e in events)
+
+
+async def test_an_on_main_subject_parks_even_when_mergeability_is_unknown(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """Pin the `subject_on_main` exemption. When the reviewed commit is already
+    on the default branch there is nothing to land, so the landability probe is
+    skipped entirely. Even a probe that would answer `unknown` (git < 2.38) must
+    not escalate an on-main claim, which is the most common already-satisfied
+    case. With the probe forced to `unknown`, an on-main subject still parks;
+    drop the exemption and this on-main claim would escalate instead."""
+    from no_human.vcs.landability import Landability
+
+    async def _unknown(repo_path, branch, *, base_hint=""):
+        return Landability("unknown", "", "", (), "merge-tree unavailable")
+
+    monkeypatch.setattr(orchestrator_module, "check_landability", _unknown)
+
+    outcome, task, _reviewer, _events = await _gate(
+        store, tmp_path, bare_repo, branch="main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert (await store.find_task(task.id)).status is TaskStatus.AWAITING_APPROVAL
+
+
+async def test_a_pushed_mergeable_claim_off_main_still_parks(
+    bare_repo, tmp_path, store
+):
+    """Control for #304: an off-main delivery that DOES merge cleanly is still
+    accepted — the gate blocks only an unlandable delivery, not every off-main
+    one. A new file cannot conflict with a base that moved elsewhere."""
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "feature.py").write_text("def feat():\n    return 1\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "branch adds a new file")
+        _git(bare_repo, "push", "-u", "origin", stem)
+        # Base moves on an UNRELATED file, so the branch still merges clean.
+        _git(bare_repo, "checkout", "main")
+        (bare_repo / "other.py").write_text("x = 1\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "trunk moves on an unrelated file")
+        _git(bare_repo, "push", "origin", "main")
+        _git(bare_repo, "checkout", stem)
+        return stem
+
+    outcome, _task, reviewer, _events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert reviewer.calls == [{"mode": "already_satisfied"}]  # reviewer DID run
+
+
+async def test_a_claim_conflicting_only_on_the_manifest_still_parks(
+    bare_repo, tmp_path, store
+):
+    """Pin the `derived` state. Every landing rewrites RELEASE_MANIFEST.txt, so
+    a stale delivery branch most often conflicts with the base ONLY on that
+    file, which `land_task` regenerates at land time. Such a claim is landable:
+    it must still reach the reviewer and park, not be refused or escalated."""
+    from no_human.vcs.landability import check_landability
+
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        (bare_repo / "RELEASE_MANIFEST.txt").write_text("manifest v1\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "add manifest")
+        _git(bare_repo, "push", "origin", "main")
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "feature.py").write_text("def feat():\n    return 1\n")
+        (bare_repo / "RELEASE_MANIFEST.txt").write_text("manifest branch\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "branch adds a file and repins")
+        _git(bare_repo, "push", "-u", "origin", stem)
+        # Base moves and repins the manifest too: the ONLY conflicting path.
+        _git(bare_repo, "checkout", "main")
+        (bare_repo / "RELEASE_MANIFEST.txt").write_text("manifest main\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "trunk lands something and repins")
+        _git(bare_repo, "push", "origin", "main")
+        _git(bare_repo, "checkout", stem)
+        return stem
+
+    outcome, _task, reviewer, events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    # Positive control: this setup really is the `derived` shape, not `clean`.
+    probe = await check_landability(
+        str(bare_repo), GitRepo(bare_repo).head_sha(), base_hint="main")
+    assert probe.state == "derived", probe
+    assert probe.conflicts == ("RELEASE_MANIFEST.txt",)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert reviewer.calls == [{"mode": "already_satisfied"}]  # reviewer DID run
+    assert not any(e.get("kind") in ("already_satisfied_unlandable",
+                                     "already_satisfied_landability_unknown")
+                   for e in events)

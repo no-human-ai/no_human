@@ -1408,3 +1408,132 @@ async def test_wake_delegates_to_shared_shipped_helper(tmp_path, store, monkeypa
 
     assert out == "shipped_pr_closed"
     assert len(calls) == 1, "the CLOSED rung must call the shared helper, not a copy"
+
+
+def _remote_only_delivery_branch_repo(tmp_path, *, land=True):
+    """The delivery branch exists only as ``origin/feature`` in the repo the
+    watcher inspects: the local branch is absent (e.g. deleted after landing).
+    With ``land``, a squash carrying the same content is pushed to origin/main."""
+    repo = _with_upstream(_make_repo(tmp_path))
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "a.txt").write_text("changed\n")
+    _git(repo, "commit", "-am", "feature: change a.txt")
+    _git(repo, "push", "-u", "origin", "feature")
+    if land:
+        _git(repo, "checkout", "-b", "landing", "main")
+        (repo / "a.txt").write_text("changed\n")
+        _git(repo, "commit", "-am", "squash: land the feature content")
+        _git(repo, "push", "origin", "landing:main")
+        _git(repo, "checkout", "main")
+        _git(repo, "branch", "-D", "landing")
+    _git(repo, "checkout", "main")
+    _git(repo, "branch", "-D", "feature")
+    _git(repo, "fetch", "origin")
+    return repo
+
+
+async def test_conflicting_pr_with_remote_only_delivery_branch_and_landed_content(tmp_path, store):
+    """The local delivery branch is absent (e.g. deleted after landing) and
+    only ``origin/feature`` remains. Its content is on origin/main, so a
+    conflicting open PR does NOT resume: it completes as shipped_pr_conflict."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=True)
+    t = await _approval_task(store, repo)
+    w = await _conflicting_watcher(store, pr_shipped=pr_watcher.branch_landed_commit)
+
+    out = await w._check_open_pr(t)
+    assert out == "shipped_pr_conflict"
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.DONE
+    assert "pr_conflict_rounds" not in (fresh.context or {})
+    assert not (fresh.context or {}).get("send_back_feedback")
+
+
+async def test_remote_only_delivery_branch_whose_content_never_landed_is_not_shipped(
+        tmp_path, store):
+    """The control for the remote-tracking fallback: ``origin/feature``
+    resolves, but its content never reached main, so it is NOT reported as
+    landed and the task does not complete."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=False)
+    assert await pr_watcher.branch_landed_commit(str(repo), "feature", "main") is None
+
+    t = await _approval_task(store, repo)
+    w = await _conflicting_watcher(store, pr_shipped=pr_watcher.branch_landed_commit)
+    out = await w._check_open_pr(t)
+    assert out != "shipped_pr_conflict"
+    fresh = await store.get_task(t.id)
+    assert fresh.status is not TaskStatus.DONE
+    assert not (fresh.context or {}).get("landed_sha")
+
+
+async def test_remote_only_delivery_branch_landed_then_same_file_edited_later(tmp_path):
+    """The landing is followed by a later main commit to the same file, so
+    the tip check fails and the history scan has to find the landing — on
+    the resolved ``origin/feature`` ref, since the local branch is absent."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=True)
+    landing = _git_out(repo, "rev-parse", "origin/main").strip()
+    _git(repo, "checkout", "-b", "later", "origin/main")
+    (repo / "a.txt").write_text("changed\nand a later edit\n")
+    _git(repo, "commit", "-am", "later: edit a.txt again")
+    _git(repo, "push", "origin", "later:main")
+    _git(repo, "checkout", "main")
+    _git(repo, "branch", "-D", "later")
+    _git(repo, "fetch", "origin")
+    tip = _git_out(repo, "rev-parse", "origin/main").strip()
+    assert tip != landing
+
+    assert await pr_watcher.branch_landed_commit(str(repo), "feature", "main") == landing
+
+
+async def test_remote_only_delivery_branch_landed_then_unrelated_file_edited_later(tmp_path):
+    """A later main commit touches an UNRELATED file, so the tip itself still
+    contains ``origin/feature`` and the tip check answers with the tip (the
+    history scan, which only visits commits touching a.txt, would name the
+    older landing instead)."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=True)
+    landing = _git_out(repo, "rev-parse", "origin/main").strip()
+    _git(repo, "checkout", "-b", "later", "origin/main")
+    (repo / "b.txt").write_text("unrelated\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "later: add an unrelated file")
+    _git(repo, "push", "origin", "later:main")
+    _git(repo, "checkout", "main")
+    _git(repo, "branch", "-D", "later")
+    _git(repo, "fetch", "origin")
+    tip = _git_out(repo, "rev-parse", "origin/main").strip()
+    assert tip != landing
+
+    assert await pr_watcher.branch_landed_commit(str(repo), "feature", "main") == tip
+
+
+async def test_remote_only_delivery_branch_with_unfetched_newer_commits_is_not_shipped(tmp_path):
+    """The local tracking ref ``origin/feature`` is stale: its commit's content
+    landed, but the remote branch has since gained a commit (pushed from
+    another clone, e.g. a forge-side conflict resolution) that is NOT on main.
+    The fallback fetches before trusting the tracking ref, so this is not
+    reported as landed."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=True)
+    stale = _git_out(repo, "rev-parse", "refs/remotes/origin/feature").strip()
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", "-b", "feature",
+                    str(repo.parent / "origin.git"), str(other)],
+                   check=True, capture_output=True)
+    _git(other, "config", "user.email", "t@example.com")
+    _git(other, "config", "user.name", "t")
+    (other / "b.txt").write_text("newer work that never landed\n")
+    _git(other, "add", "b.txt")
+    _git(other, "commit", "-m", "feature: newer unlanded commit")
+    _git(other, "push", "origin", "feature")
+    assert _git_out(repo, "rev-parse", "refs/remotes/origin/feature").strip() == stale
+
+    assert await pr_watcher.branch_landed_commit(str(repo), "feature", "main") is None
+
+
+async def test_remote_only_delivery_branch_is_not_shipped_when_the_fetch_fails(tmp_path):
+    """The tracking ref exists and its content landed, but origin is
+    unreachable, so the tracking ref cannot be refreshed. It may be stale, so
+    it is not trusted: the answer is "not landed", not the stale answer."""
+    repo = _remote_only_delivery_branch_repo(tmp_path, land=True)
+    assert _git_out(repo, "rev-parse", "--verify", "refs/remotes/origin/feature").strip()
+    (repo.parent / "origin.git").rename(repo.parent / "origin-gone.git")
+
+    assert await pr_watcher.branch_landed_commit(str(repo), "feature", "main") is None

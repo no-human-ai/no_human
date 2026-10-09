@@ -142,6 +142,7 @@ from ..vcs import (
     promote_draft_pr,
 )
 from ..vcs import ci_rollup, pr_watcher
+from ..vcs.landability import check_landability
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.recut import already_recut, branch_stem, diverged_state, recut
@@ -1708,10 +1709,18 @@ def _ci_failure_unrelated(ci_result: "CIResult", changed_files: list[str]) -> st
     overlap) — None routes into the bounded fix loop, so we never silently skip a
     failure that might be ours. Matching is by class/file stem, since CI reports
     test classes (``com.acme.analytics-export.AnalyticsExportE2EIT``) while the diff lists paths
-    (``.../AnalyticsExportE2EIT.java``)."""
+    (``.../AnalyticsExportE2EIT.java``).
+
+    Only a failure whose name IS a test id can be compared against the diff:
+    unless every failing result came from a test report (`is_test_case`, set
+    only by Jenkins' `_failing_tests`), return None. A job/check name
+    (GitHub Actions' ``Python``, a GitLab ``test-3.12``) names no file, so its
+    failure is never called unrelated (#429)."""
     failing = [j for j in ci_result.jobs if j.status == "failed"]
     if not failing or not changed_files:
         return None  # not enough evidence to attribute — fix-loop, don't skip
+    if not all(j.is_test_case for j in failing):
+        return None  # a job/check name, not a test id — fix-loop, don't skip
     # File stems from the diff (basename without extension), e.g.
     # ".../AnalyticsExportE2EIT.java" -> "analyticsexporte2eit".
     changed_stems = {
@@ -11154,6 +11163,51 @@ class Orchestrator:
             return await self._fail_already_satisfied(
                 task, decision, attempt_id=attempt_id, attempt_n=attempt_n,
                 reviewed_sha=reviewed_sha, detail=detail)
+        # #304: a claim whose satisfying commit is NOT already on the ship ref
+        # is only approvable if its delivery LANDS. `_already_satisfied_subject`
+        # proved the commit is pushed, not that it merges — a re-claimed branch
+        # can be pushed yet conflict with a moved base, and parking that strands
+        # the task in "needs you" with nothing `nh approve --ready` can offer.
+        # `check_landability` here probes the default branch, which is what
+        # `land_task` actually merges onto (`vcs/approve_merge.py`), not
+        # `--ready`'s base_branch hint. Fail closed, but route by WHO can act:
+        # a real conflict is the coder's to re-cut; an undeterminable result is
+        # most often a host limit (git < 2.38 lacking `merge-tree --write-tree`),
+        # which no coder round can fix, so it escalates to a human.
+        if not subject_on_main:
+            landability = await check_landability(
+                str(repo.path), reviewed_sha, base_hint=(ship_ref or base or ""))
+            if landability.state == "conflict":
+                detail = (
+                    "already-satisfied claim refused: the delivery conflicts "
+                    f"with the current base — {landability.detail}. Re-cut the "
+                    "work onto the current base so approval has something to "
+                    "merge.")
+                self._emit_review(
+                    "already_satisfied_unlandable", detail,
+                    reviewed_sha=reviewed_sha, branch=branch or "",
+                    merge_state=landability.state, ship_ref=ship_ref,
+                )
+                decision = ReviewDecision(passed=False, checklist=[ChecklistItem(
+                    "already-satisfied delivery lands on the current base",
+                    False, detail, severity="high")])
+                return await self._fail_already_satisfied(
+                    task, decision, attempt_id=attempt_id, attempt_n=attempt_n,
+                    reviewed_sha=reviewed_sha, detail=detail)
+            if landability.state not in ("clean", "derived"):
+                detail = (
+                    "already-satisfied claim's commit is pushed but its "
+                    f"mergeability could not be determined ({landability.detail}); "
+                    "the claim was not reviewed. The cause is most often a host "
+                    "limit (git < 2.38 lacks `merge-tree --write-tree`): fix the "
+                    "named cause, then `nh reply` to retry.")
+                self._emit_review(
+                    "already_satisfied_landability_unknown", detail,
+                    reviewed_sha=reviewed_sha, branch=branch or "",
+                    merge_state=landability.state, ship_ref=ship_ref,
+                )
+                return await self._escalate(
+                    task, detail, repo=repo, branch=branch, goal=task.title)
         advisory_pass = False
         if self.reviewer is None:
             if not (self.config.get("reviewer") or {}).get("allow_advisory", False):
@@ -14476,28 +14530,10 @@ class Orchestrator:
     #
     # Retitling and closing are the only forge writes here, and only on a
     # draft this task itself opened and then abandoned — never on a delivered
-    # or human-reviewed PR (see the explicit `pr_delivered_url` guard below).
+    # or human-reviewed PR (see the delivered-PR guard in
+    # `blockers/cancel_pr_closeout.py`, which `_abandon_draft_pr` calls).
     # Neither merges, approves, nor un-drafts anything: constraint #2 binds
     # MERGE, not close, and remains untouched.
-    # 🔴 REASON-NEUTRAL, AND IT MUST STAY THAT WAY. This read "[ABANDONED —
-    # attempt failed review]", which `_raise_blocker` then stamped on EVERY
-    # escalated route regardless of why. On the CI-infra route the review has
-    # already PASSED (`_run_attempt`: draft -> review -> CI -> escalate, all
-    # before `_finalize`), so the title asserted a review failure that did not
-    # happen — on the one field a repo's PR list shows, in the branch whose
-    # whole purpose is to stop no_human claiming untrue things.
-    #
-    # WHY A CONSTANT AND NOT A PER-REASON PREFIX: the routes reaching
-    # `_abandon_draft_pr` are open-ended — ten blocker categories, plus
-    # `_open_draft_pr_for_review` retiring a draft when a revision moves to a
-    # new branch — and the only fact EVERY caller has actually established is
-    # that this draft did not become a delivered PR. Anything narrower is a
-    # claim the call site cannot guarantee, and a wrong mapping would just
-    # reintroduce this defect one route at a time. The real reason is already
-    # passed in as `reason` and rendered in the comment, which is the field
-    # with room to be precise.
-    _ABANDONED_TITLE_PREFIX = "[ABANDONED — not delivered] "
-
     # 🔴 THE ABANDON PATH NO LONGER POSTS A COMMENT AT ALL (refile of
     # 1dfed378): it retitles, then CLOSES. `Reason:` used to be a raw,
     # unfiltered, model-authored channel onto a PR — `blocker.
@@ -14511,9 +14547,9 @@ class Orchestrator:
     # on a watched PR reads as human feedback and re-wakes the task) is
     # discharged the same way. `reason`/`reason_from_agent` stay in the
     # signature: the reason still reaches the timeline/board/`nh blocked` via
-    # the `pr_draft_abandoned` event below, which is internal bookkeeping, not
-    # a forge write, so the provenance concern that drove the old attribution
-    # machinery does not apply there.
+    # the `pr_draft_abandoned` event the helper records, which is internal
+    # bookkeeping, not a forge write, so the provenance concern that drove the
+    # old attribution machinery does not apply there.
 
     async def _abandon_draft_pr(
         self, task: Task, reason: str, *, reason_from_agent: bool,
@@ -14522,79 +14558,27 @@ class Orchestrator:
         CLOSE it. Best-effort — closing is cleanup, never a gate.
 
         ``reason`` and ``reason_from_agent`` are kept for the call sites and
-        for the `pr_draft_abandoned` event emitted below, which carries the
+        for the `pr_draft_abandoned` event the helper emits, which carries the
         reason onto the timeline/board/`nh blocked`; neither reaches the forge
-        any more (see the comment above `_ABANDONED_TITLE_PREFIX` — the note
-        that used to render them there is gone).
+        any more (see the comment above this method — the note that used to
+        render them there is gone). The title prefix and its rationale live
+        with `_ABANDONED_TITLE_PREFIX` in `blockers/cancel_pr_closeout.py`.
 
         Bookkeeping happens even when the forge writes fail — the URL must
         leave `pr_draft_created` either way, or the next attempt would treat a
         stale draft as its own and rewrite a body it did not author.
         """
-        ctx = task.context or {}
-        url = str(ctx.get("pr_draft_created") or "").strip()
-        if not url:
-            return ""
-        # 🔴 NEVER RETITLE A DELIVERED PR. `_finalize` does not clear the draft
-        # slot — it only ever WRITES `pr_watch`/`pr_branch` alongside it — so
-        # after a successful delivery the draft slot and the live slot name the
-        # SAME pull request. A revision on that branch (`nh reject`, a PR
-        # comment) that then exhausts max_attempts walks
-        # `_escalate_exhausted` -> `_raise_blocker` -> here, and stamped
-        # "[ABANDONED — attempt failed review]" onto a human-reviewed PR
-        # sitting in AWAITING_APPROVAL — telling the reader it is not a
-        # delivered change while it still holds exactly the reviewed code,
-        # because the failed revision pushed nothing.
-        #
-        # `pr_watch`/`pr_branch` are written at ONE place (`_finalize`, after
-        # `open_pr` returned and the task moved to AWAITING_APPROVAL), so their
-        # presence is the durable record that a PR was delivered for a human.
-        # Either match is enough: the URL is the direct statement, and the
-        # branch survives a forge that spells the same MR's URL two ways. The
-        # asymmetry decides the OR — a guard that over-fires costs a dead draft
-        # its label, one that under-fires corrupts a live human-reviewed PR.
-        # Explicit discriminator first (criterion 3): written by `_finalize`
-        # at the one place delivery-for-review is established, so it cannot
-        # be derived from a title or inferred from any other slot.
-        delivered_explicit = str(ctx.get("pr_delivered_url") or "").strip()
-        if url and url == delivered_explicit:
-            self._advisory(
-                f"not abandoning {url}: it is the PR this task delivered for "
-                f"review, not a draft an attempt walked away from")
-            return ""
-        delivered_url = str(ctx.get("pr_watch") or "").strip()
-        delivered_branch = str(ctx.get("pr_branch") or "").strip()
-        draft_branch = str(ctx.get("pr_draft_branch") or "").strip()
-        if (url and url == delivered_url) or (
-                draft_branch and draft_branch == delivered_branch):
-            self._advisory(
-                f"not abandoning {url}: it is the PR this task delivered for "
-                f"review, not a draft an attempt walked away from")
-            return ""
-        if url.startswith("http"):
-            title = self._ABANDONED_TITLE_PREFIX + self._commit_message(task)
-            try:
-                from ..vcs.comment_poster import close_pr, set_pr_title
-                res = await asyncio.to_thread(set_pr_title, url, title)
-                if not res.get("ok"):
-                    self._advisory(
-                        f"could not retitle abandoned draft {url}: {res.get('error')}")
-                res = await asyncio.to_thread(close_pr, url)
-                if not res.get("ok"):
-                    self._advisory(
-                        f"could not close abandoned draft {url}: {res.get('error')}")
-            except Exception as exc:  # noqa: BLE001 — never fail an off-ramp on this
-                self._advisory(f"abandoning draft {url} failed: {exc}")
-        prior = [u for u in (ctx.get("abandoned_pr_urls") or []) if u]
-        if url not in prior:
-            prior.append(url)
-        ctx["abandoned_pr_urls"] = prior[-6:]
-        ctx.pop("pr_draft_created", None)
-        ctx.pop("pr_draft_branch", None)
-        task.context = ctx
-        await self.store.update_task(task)
-        self.emit("pr_draft_abandoned", f"{url} — {reason}", pr_url=url)
-        return url
+        from ..blockers.cancel_pr_closeout import close_draft_pr_on_cancel
+
+        return await close_draft_pr_on_cancel(
+            self.store,
+            task,
+            reason=reason,
+            reason_from_agent=reason_from_agent,
+            config=self.config,
+            on_advisory=self._advisory,
+            emit=self.emit,
+        )
 
     async def _open_draft_pr_for_review(
         self, task: Task, repo: GitRepo, branch: str, base: str | None,

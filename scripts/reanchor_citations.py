@@ -33,6 +33,7 @@ import argparse
 import importlib.util
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -376,6 +377,20 @@ def _reconcile_all(
             final_texts[path] = doc_texts[path]
     return final_texts, unresolved, total_changed
 
+
+def _format_path(path: Path) -> str:
+    return path.relative_to(REPO).as_posix()
+
+
+def _print_refused(mod, docs: Iterable[str]) -> None:
+    doc_paths = mod._CITATION_DOC_PATHS
+    paths = {doc_paths[d] for d in docs if d in doc_paths}
+    if paths:
+        print("Refused (citations left unchanged):")
+        for path in sorted(paths):
+            print(f"  {_format_path(path)}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="reanchor_citations.py",
@@ -409,6 +424,11 @@ def main(argv: list[str] | None = None) -> int:
         if texts is None:
             for u in unresolved:
                 print(f"FAIL: {u.doc} `{u.raw}` — {u.reason}")
+            print("Nothing written: an ambiguous citation aborted the batch.")
+            batch_docs = {r.doc for r in recs} | {u.doc for u in unfixable} | {u.doc for u in unresolved}
+            _print_refused(mod, batch_docs)
+            if unfixable:
+                print(f"\nUnfixable citations remain: {len(unfixable)}")
             print("VERDICT=FAIL")
             return 1
 
@@ -426,7 +446,9 @@ def main(argv: list[str] | None = None) -> int:
         if texts:
             print("Modified:")
             for path in texts:
-                print(f"  {path.relative_to(REPO).as_posix()}")
+                print(f"  {_format_path(path)}")
+
+        _print_refused(mod, (u.doc for u in unfixable))
 
         if unfixable:
             print(f"\nUnfixable citations remain: {len(unfixable)}")
@@ -453,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not drifts:
         # Nothing fixable to write; the unfixable rows above still block.
+        _print_refused(mod, (u.doc for u in unfixable))
+        if unfixable:
+            print(f"\nUnfixable citations remain: {len(unfixable)}")
         print("VERDICT=FAIL")
         return 1
 
@@ -460,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
     if texts is None:
         for u in unresolved:
             print(f"FAIL: {u.doc} `{u.raw}` — {u.reason}")
+        print("Nothing written: an ambiguous citation aborted the batch.")
+        batch_docs = {d.doc for d in drifts} | {u.doc for u in unfixable} | {u.doc for u in unresolved}
+        _print_refused(mod, batch_docs)
+        if unfixable:
+            print(f"\nUnfixable citations remain: {len(unfixable)}")
         print("VERDICT=FAIL")
         return 1
 
@@ -479,7 +509,9 @@ def main(argv: list[str] | None = None) -> int:
     if texts:
         print("Modified:")
         for path in texts:
-            print(f"  {path.relative_to(REPO).as_posix()}")
+            print(f"  {_format_path(path)}")
+
+    _print_refused(mod, (u.doc for u in unfixable))
 
     if unfixable:
         print(f"\nUnfixable citations remain: {len(unfixable)}")

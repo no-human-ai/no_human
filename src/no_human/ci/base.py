@@ -96,6 +96,11 @@ class JobResult:
     status: str
     failure_reason: str | None = None
     web_url: str = ""
+    # True only for a result built from a test REPORT case (Jenkins'
+    # `_failing_tests`), whose `name` is a test id. Every other backend reports
+    # job/check/status names; `_ci_failure_unrelated` never calls such a
+    # failure "unrelated" to the diff (#429).
+    is_test_case: bool = False
 
 
 @dataclass

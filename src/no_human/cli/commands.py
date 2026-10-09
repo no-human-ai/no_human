@@ -2446,7 +2446,7 @@ def task_cancel(task_id, reason):
                 # a re-labelling, recorded the same way `nh approve --landed`
                 # records an assertion: honestly, with a human event, and
                 # without pretending automated evidence produced it.
-                from ..blockers import human_event
+                from ..blockers import close_draft_pr_on_cancel, human_event
                 t.context = await store.record_cancel_reason(t.id, reason)
                 await store.save_events(t.id, [{
                     **human_event(
@@ -2459,6 +2459,7 @@ def task_cancel(task_id, reason):
                     "prior_cancel_reason": prior_reason,
                     "ts": time.time(),
                 }])
+                await close_draft_pr_on_cancel(store, t, reason=reason, config=config)
                 console.print(
                     f"[red]cancelled[/] {t.id[:8]} — reason: {reason} "
                     f"(was failed)")
@@ -2491,7 +2492,7 @@ def task_cancel(task_id, reason):
                 )
                 return
 
-            from ..blockers import human_event
+            from ..blockers import close_draft_pr_on_cancel, human_event
             prior_status = t.status
             prior_blocker = t.blocker if isinstance(t.blocker, dict) else None
             t.context = await store.record_cancel_reason(t.id, reason)
@@ -2502,6 +2503,7 @@ def task_cancel(task_id, reason):
                     "cancel", prior_status=prior_status, prior_blocker=prior_blocker,
                     reason=reason, actor="cli"),
             )
+            await close_draft_pr_on_cancel(store, t, reason=reason, config=config)
             # Unconditional (unlike the API endpoint's mirror of this same
             # helper, which is gated on `not stopped`): this branch only ever
             # runs when there is NO live server-owned session to cancel — the
@@ -5216,13 +5218,13 @@ async def _approve_find_ready(store, config):
         base_hint = (t.context or {}).get("base_branch") or ""
         # `head_sha`, not the bare `branch` name: a PR branch usually has no
         # local ref in the approve checkout (only `origin/<branch>` after
-        # `fetch()` above, see `pr_watcher._base_tips`'s docstring) and
-        # `check_landability` -> `conflicting_paths` -> `refs_resolvable`
-        # does a plain `rev-parse --verify branch^{commit}` with no
-        # `origin/` fallback, so the bare name degrades to `state="unknown"`
-        # for exactly the remote-only branches this check exists to cover.
-        # `head_sha` is the same concrete commit `ref` was just resolved to
-        # above and is always resolvable once fetched.
+        # `fetch()` above, see `pr_watcher._base_tips`'s docstring). The sha
+        # pins the exact commit `ref` was just resolved to above, so the
+        # verdict is about the reviewed head and not whatever a later
+        # re-resolution might pick. (`conflicting_paths` now also falls back to
+        # `origin/<branch>` for a bare name, so a branch would resolve rather
+        # than degrade to `state="unknown"` — but the concrete sha is still the
+        # precise thing to ask landability about, and is always resolvable.)
         landability = await check_landability(t.repo_path, head_sha, base_hint=base_hint)
         ready.append(_ReadyTask(t, resolved.url, passed, total,
                                 _verifiers_advisory_note(rules), landability))

@@ -752,6 +752,10 @@ def _rig(store, **flags):
         sched._created_at = time.time() - 3 * 3600
     if flags.get("tick_stalled"):
         sched._last_tick_at = time.time() - 3 * 3600
+    if flags.get("lease_lost"):
+        sched._lease_lost = "a sibling now owns the pool"
+    if flags.get("lease_refresh_failing"):
+        sched._lease_refresh_failed = "database is locked"
     if flags.get("db_view_stale"):
         sched._db_view_stale = True
     if flags.get("probe_failing"):
@@ -793,6 +797,26 @@ async def test_tick_stalled_outranks_db_view_stale(store):
     honest headline and the reviewer confirmed this ranking."""
     s = _rig(store, tick_stalled=True, db_view_stale=True)
     assert s.health_snapshot()["idle_reason"] == "tick_loop_stalled"
+
+
+async def test_lease_lost_outranks_lease_refresh_failing(store):
+    """#222 review: a terminal lease loss outranks a non-latching refresh
+    failure. Once a sibling owns the pool (or refresh failed past the
+    tolerance), the tick is done for good — the more urgent headline than a
+    miss a later tick may still retry."""
+    s = _rig(store, lease_lost=True, lease_refresh_failing=True)
+    assert s.health_snapshot()["idle_reason"] == "lease_lost"
+
+
+async def test_lease_refresh_failing_outranks_db_view_stale(store):
+    """#222 review: a refresh that did not complete stopped THIS tick's
+    dispatch, so it outranks a stale view for the same fault-first reason the
+    other pairs do, and must never read as a normal `queue_empty`. Deleting the
+    `lease_refresh_failing` branch drops this to `db_view_stale` and fails."""
+    s = _rig(store, lease_refresh_failing=True, db_view_stale=True)
+    snap = s.health_snapshot()
+    assert snap["idle_reason"] == "lease_refresh_failing"
+    assert snap["lease_refresh_failed"] == "database is locked"
 
 
 async def test_db_view_stale_outranks_db_probe_failing(store):

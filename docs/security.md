@@ -162,11 +162,12 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1277`, `:GitRepo.fetch:1657`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1277`, `:GitRepo.fetch:1657`,
+  and `vcs/pr_watcher.py:_resolve_ref_or_commit` for a delivery branch absent locally),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
-  (`cli/commands.py:merge_stack_run:3206`). This is *your* command, not the agent's — an agent
+  (`cli/commands.py:merge_stack_run:3208`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models
   (`_LEXICAL_MERGE_STACK` in `agent/guard.py`, plus the argv check beside it),
   in both session modes; see §2 for the bound.
@@ -258,7 +259,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5659`, `:merge_stack_run:3176`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5661`, `:merge_stack_run:3178`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses
@@ -389,7 +390,7 @@ config key that turns it on and the default that keeps it off.
     as the request body (`ci/gitlab.py:GitLabCI._trigger:403`). It has no watch-only mode: if
     it is enabled, it triggers.
   - **Jenkins** (`ci.backend: "jenkins"`) reaches `ci.base_url` over `curl`
-    (`ci/jenkins.py:JenkinsCI._curl:306-335`). `ci.mode` defaults to **`watch`**, which only
+    (`ci/jenkins.py:JenkinsCI._curl:307-336`). `ci.mode` defaults to **`watch`**, which only
     polls `…/lastBuild/api/json`; **`ci.mode: "trigger"` is opt-in** and POSTs
     `…/buildWithParameters` with `ci.variables` in the query string
     (`ci/jenkins.py:JenkinsCI._run_once:154-169`). The same job API is used by the PR-image

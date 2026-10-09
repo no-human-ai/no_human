@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 
+from no_human.vcs.derived_conflict import conflicting_paths
 from no_human.vcs.landability import check_landability
 
 
@@ -185,3 +186,117 @@ def test_probe_writes_no_refs_and_leaves_worktree_clean(tmp_path):
     assert after_refs == before_refs
     assert after_branch == before_branch
     assert after_status == before_status
+
+
+def _make_repo_with_remote(tmp_path):
+    """A repo with a bare `origin` and `main` pushed, as the watcher's
+    checkout looks after cloning and fetching."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare", "-b", "main")
+    repo = _make_repo(tmp_path, "work")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "origin", "main")
+    return repo
+
+
+def _push_delivery_branch_remote_only(repo, name, edits):
+    """Create `name`, apply `edits` (path -> text), push it, then DELETE the
+    local ref and fetch — so the branch exists ONLY as `origin/<name>`, the
+    normal state of a pushed delivery branch that was never checked out here."""
+    _git(repo, "checkout", "-b", name)
+    for path, text in edits.items():
+        (repo / path).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", f"{name} work")
+    _git(repo, "push", "origin", name)
+    _git(repo, "checkout", "main")
+    _git(repo, "branch", "-D", name)
+    _git(repo, "fetch", "origin")
+    return repo
+
+
+def test_remote_only_branch_that_merges_is_clean_not_unknown(tmp_path):
+    """#512 (sharper half): a delivery branch with no LOCAL ref (only
+    `origin/<branch>`) used to make `conflicting_paths` return None, so the
+    wake conflict handler escalated with an unresolvable ref even after its
+    fetch retry. It now falls back to the `origin/` ref, so the bare name
+    answers `clean`."""
+    repo = _make_repo_with_remote(tmp_path)
+    _push_delivery_branch_remote_only(repo, "no-human/deliv", {"new.txt": "new\n"})
+    # precondition: the bare name does NOT resolve locally
+    assert subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+         "no-human/deliv^{commit}"], capture_output=True).returncode != 0
+
+    result = _check(repo, "no-human/deliv")
+
+    assert result.state == "clean"  # was "unknown" before the fix
+    assert result.conflicts == ()
+
+
+def test_remote_only_branch_conflict_is_reported_not_unknown(tmp_path):
+    """The fallback reports a real CONFLICT for a remote-only branch too, not a
+    blanket clean — the origin/ ref is the pushed head, judged honestly."""
+    repo = _make_repo_with_remote(tmp_path)
+    # move main after branching so the branch's edit to a.txt conflicts
+    _push_delivery_branch_remote_only(repo, "no-human/clash", {"a.txt": "branch edit\n"})
+    (repo / "a.txt").write_text("main edit\n")
+    _git(repo, "commit", "-am", "main edits a.txt after the branch")
+
+    result = _check(repo, "no-human/clash")
+
+    assert result.state == "conflict"
+    assert "a.txt" in result.conflicts
+
+
+def test_an_unresolvable_branch_is_still_unknown(tmp_path):
+    """A branch that exists under neither the bare name nor `origin/` stays
+    `unknown` — the fallback adds a candidate, it does not invent an answer."""
+    repo = _make_repo_with_remote(tmp_path)
+
+    result = _check(repo, "no-human/does-not-exist")
+
+    assert result.state == "unknown"
+
+
+def test_conflicting_paths_answers_a_remote_only_branch_directly(tmp_path):
+    """Pin the wake-side entry point this PR is really about: `conflicting_paths`
+    called with a bare delivery-branch name that has only an `origin/` ref now
+    returns a real set (empty for a clean merge, the conflicted paths otherwise)
+    instead of None, so the wake conflict handler stops escalating a branch that
+    merges fine."""
+    repo = _make_repo_with_remote(tmp_path)
+    _push_delivery_branch_remote_only(repo, "no-human/direct", {"new.txt": "new\n"})
+    assert asyncio.run(conflicting_paths(str(repo), "main", "no-human/direct")) == set()
+
+    _push_delivery_branch_remote_only(repo, "no-human/direct-clash", {"a.txt": "branch\n"})
+    (repo / "a.txt").write_text("main\n")
+    _git(repo, "commit", "-am", "main edits a.txt after the branch")
+    assert "a.txt" in asyncio.run(
+        conflicting_paths(str(repo), "main", "no-human/direct-clash"))
+
+
+def test_a_local_branch_wins_over_a_diverged_origin_ref(tmp_path):
+    """When the bare name resolves, it is the ref asked about — even if
+    `origin/<branch>` points at a different commit. Here `origin/<branch>`
+    conflicts with main and the local branch merges cleanly, so the answer
+    is the local branch's (empty), not origin's (`a.txt`)."""
+    repo = _make_repo_with_remote(tmp_path)
+    _push_delivery_branch_remote_only(repo, "no-human/split", {"a.txt": "branch\n"})
+    # a LOCAL no-human/split at a different, clean commit off the same base
+    _git(repo, "checkout", "-b", "no-human/split", "main")
+    (repo / "new.txt").write_text("new\n")
+    _git(repo, "add", "new.txt")
+    _git(repo, "commit", "-m", "local split work")
+    _git(repo, "checkout", "main")
+    (repo / "a.txt").write_text("main\n")
+    _git(repo, "commit", "-am", "main edits a.txt after the branch")
+    # precondition: the two refs differ, and origin's really conflicts
+    assert (_git_out(repo, "rev-parse", "no-human/split")
+            != _git_out(repo, "rev-parse", "origin/no-human/split"))
+    assert "a.txt" in asyncio.run(
+        conflicting_paths(str(repo), "main", "origin/no-human/split"))
+
+    assert asyncio.run(
+        conflicting_paths(str(repo), "main", "no-human/split")) == set()

@@ -1429,6 +1429,35 @@ async def _contained_at(repo_path: str, commit: str, branch: str) -> bool:
     return True
 
 
+async def _resolve_ref_or_commit(repo_path: str, ref: str) -> str:
+    """Resolve *ref* to a commit-ish git can parse in *repo_path*.
+
+    Checks *ref* verbatim first; that path runs no fetch. Only when it does
+    not resolve (a delivery branch absent locally, e.g. deleted after
+    landing) does it fetch ``refs/heads/<ref>`` from ``origin`` into
+    ``refs/remotes/origin/<ref>`` and return that tracking ref. If the fetch
+    fails, the tracking ref may be stale (the remote branch may have newer,
+    unlanded commits), so it is NOT used and *ref* is returned unchanged.
+    Returns *ref* unchanged whenever nothing resolves (fail-closed contract:
+    the caller's containment checks then report "not landed").
+    """
+    if not repo_path or not ref:
+        return ref
+    rc, sha = await _git_rc(repo_path, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    if rc == 0 and sha:
+        return ref
+    # `origin` is hard-coded because it is GitRepo.push's default remote.
+    tracking = f"refs/remotes/origin/{ref}"
+    rc, _ = await _git_rc(repo_path, "fetch", "--quiet", "origin",
+                          f"+refs/heads/{ref}:{tracking}")
+    if rc != 0:
+        return ref
+    rc, sha = await _git_rc(repo_path, "rev-parse", "--verify", f"{tracking}^{{commit}}")
+    if rc == 0 and sha:
+        return tracking
+    return ref
+
+
 async def containment_residue(repo_path: str, commit: str, branch: str) -> list[str] | None:
     """Paths that keep ``branch`` from being contained at ``commit`` — the
     honest reason automated containment refused, exposed for the audit
@@ -1558,13 +1587,14 @@ async def branch_landed_commit(
         return None
     if landed_sha and await commit_is_ancestor(repo_path, landed_sha, base):
         return landed_sha
+    target = await _resolve_ref_or_commit(repo_path, branch)
     for tip in await _base_tips(repo_path, base):
         rc, tip_sha = await _git_rc(repo_path, "rev-parse", tip)
         if rc != 0 or not tip_sha:
             continue
-        if await _contained_at(repo_path, tip_sha, branch):
+        if await _contained_at(repo_path, tip_sha, target):
             return tip_sha
-        paths = await _branch_paths(repo_path, tip_sha, branch)
+        paths = await _branch_paths(repo_path, tip_sha, target)
         if not paths:
             continue  # cannot tell (None), or branch has nothing to filter on
         rc, out = await _git_rc(
@@ -1574,7 +1604,7 @@ async def branch_landed_commit(
             continue
         for candidate in out.splitlines():
             candidate = candidate.strip()
-            if candidate and await _contained_at(repo_path, candidate, branch):
+            if candidate and await _contained_at(repo_path, candidate, target):
                 return candidate
     return None
 

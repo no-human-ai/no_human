@@ -36,6 +36,7 @@ Two layers below, both behavioural — no test in this file reads
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -72,8 +73,8 @@ def _git(cwd, *args):
 # which must equal the 1-based line number of `def foo():` in pkg/mod.py.    #
 # A miniature, real, standalone `scripts/reanchor_citations.py` fixture      #
 # script enforces it — the exact stdout contract                             #
-# (`DRIFT:`/`FAIL:`/`applied N re-anchor(s)`/`VERDICT=OK|FAIL`) is real, own #
-# process output, never mocked.                                              #
+# (`DRIFT:`/`FAIL:`/`Applied N re-anchor(s).`/`VERDICT=OK|FAIL`) is real,     #
+# own process output, never mocked.                                           #
 # --------------------------------------------------------------------------- #
 
 _FIXTURE_REANCHOR_SCRIPT = r'''"""Miniature reanchor_citations.py -- fixture only, not the real script.
@@ -164,7 +165,7 @@ def main() -> int:
     print(f"DRIFT: cite.md `{old}` -> `{new}` ({verb})")
     if args.apply:
         DOC.write_text(doc_text.replace(old, new, 1))
-        print("applied 1 re-anchor(s)")
+        print("Applied 1 re-anchor(s).")
         print("VERDICT=OK")
         return 0
     print("VERDICT=FAIL")
@@ -247,6 +248,47 @@ def test_drifted_citation_is_mechanically_reanchored(tmp_path):
     assert "mod.py:1" not in rewritten
 
 
+def test_real_reanchor_script_apply_output_is_classified_as_reanchored(tmp_path):
+    """The real `scripts/reanchor_citations.py` emits `Applied N re-anchor(s).`
+    since #500. `citation_drift.classify` (and `run_reanchor`) must classify
+    that real output as `Status.REANCHORED`, not `Status.UNKNOWN`."""
+    repo_root = Path(__file__).resolve().parents[1]
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "docs").mkdir()
+    shutil.copy(repo_root / "scripts" / "reanchor_citations.py",
+                tmp_path / "scripts" / "reanchor_citations.py")
+    (tmp_path / "docs" / "security.md").write_text("See `widget.py:foo:5`\n")
+    (tmp_path / "widget.py").write_text(
+        "# 1\n# 2\n# 3\n# 4\n# 5\n# 6\n# 7\ndef foo():\n    return 1\n"
+    )
+    rows = ['    ("security.md", "widget.py:foo:5", "widget.py", "foo"),\n']
+    for i in range(20):
+        rows.append(f'    ("security.md", "widget.py:foo_{i}:5", "widget.py", "foo"),\n')
+    table_content = (
+        'import re\n'
+        'from pathlib import Path\n'
+        'REPO = Path(__file__).resolve().parents[1]\n'
+        '_LEGACY_LINE_SPEC_RE = re.compile(r"^\\d+(?:-\\d+)?$")\n'
+        '_CITATION_DOC_PATHS = {"security.md": REPO / "docs" / "security.md"}\n'
+        'CITATION_TABLE = (\n'
+        + "".join(rows) +
+        ')\n\nassert len(CITATION_TABLE) >= 20, (\n'
+        '    "too few rows"\n'
+        ')\n'
+        'def _cited_line(tail): return int(tail.rsplit(":", 1)[1])\n'
+        'def _resolve_source(path): return [REPO / path]\n'
+        'def _token_line_in_symbol(text, sym, tok, path=None): return 8 if sym == "foo" else 5\n'
+    )
+    (tmp_path / "tests" / "test_readme_claims.py").write_text(table_content)
+
+    outcome = citation_drift.run_reanchor(tmp_path, apply=True)
+    assert outcome.status is citation_drift.Status.REANCHORED
+    assert outcome.blocking is False
+    assert outcome.docs == ("docs/security.md",)
+    assert "Applied 1 re-anchor(s)." in outcome.detail
+
+
 def test_duplicate_citation_is_unfixable_and_distinguishable_from_clean(tmp_path):
     _write_fixture_layout(tmp_path, mod_text=_MOD_DRIFTED, doc_text=_DOC_DUPLICATE)
     before = (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8")
@@ -271,9 +313,9 @@ def test_missing_citation_is_unfixable_and_distinguishable_from_clean(tmp_path):
 def test_self_contradictory_ok_verdict_with_drift_and_no_applied_marker_is_unknown():
     """Send-back finding: `classify` is a pure, exhaustive translator and
     must never trust one half of a self-contradictory shape. A `VERDICT=OK`
-    (rc 0) alongside an unresolved `DRIFT:` line but no `applied N
-    re-anchor(s)` marker is exactly that — the real script never emits this
-    combination (a resolved drift always earns its `applied` line before
+    (rc 0) alongside an unresolved `DRIFT:` line but no `Applied N
+    re-anchor(s).` marker is exactly that — the real script never emits this
+    combination (a resolved drift always earns its `Applied` line before
     printing `VERDICT=OK`), but a pure function that only pattern-matches
     stdout must still handle it correctly rather than assume the shape can
     never occur.
@@ -301,7 +343,7 @@ def test_self_contradictory_ok_verdict_with_drift_and_no_applied_marker_is_unkno
 
 def test_self_contradictory_ok_verdict_with_fail_line_is_unknown_not_clean():
     """Send-back finding (Blocker B, sibling shape A): `VERDICT=OK` (rc 0)
-    alongside an unresolved `FAIL:` line, with no `DRIFT:`/`applied` markers
+    alongside an unresolved `FAIL:` line, with no `DRIFT:`/`Applied` markers
     at all. In the real script's own `main()`, `VERDICT=OK` is only ever
     printed when the plan-level `unfixable` list is empty, and a `FAIL:`
     line can only come from that list — so this exact combination never
@@ -328,7 +370,7 @@ def test_self_contradictory_ok_verdict_with_fail_line_is_unknown_not_clean():
 
 def test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown():
     """Send-back finding (Blocker B, sibling shape B): `VERDICT=OK` (rc 0)
-    with BOTH an `applied N re-anchor(s)` marker (so a naive check would read
+    with BOTH an `Applied N re-anchor(s).` marker (so a naive check would read
     it as `Status.REANCHORED`) AND an unresolved `FAIL:` line for a separate,
     unfixable citation the script's `_apply_all` batch never touched.
 
@@ -342,7 +384,7 @@ def test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown():
     `failures`, same as the no-`applied` sibling above."""
     stdout = (
         "DRIFT: cite.md `mod.py:1` -> `mod.py:5` (re-anchoring)\n"
-        "applied 1 re-anchor(s)\n"
+        "Applied 1 re-anchor(s).\n"
         "FAIL: cite.md `mod.py:9` — occurs 0 times\n"
         "VERDICT=OK\n"
     )

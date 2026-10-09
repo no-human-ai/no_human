@@ -382,6 +382,17 @@ def test_ci_from_config_jenkins_no_job_raises():
 # --------------------------------------------------------------------------- #
 
 def _ci_with_failures(names):
+    # Failing Jenkins test-report cases: the only results whose name is a
+    # test id (`is_test_case`, set by `JenkinsCI._failing_tests`).
+    return CIResult(
+        pipeline_id="7", pipeline_url="https://b/7", status=PipelineStatus.FAILED,
+        jobs=[JobResult(name=n, status="failed", is_test_case=True) for n in names],
+    )
+
+
+def _ci_with_job_failures(names):
+    # Failing job/check/status names, as GitHub Actions, check runs, GitLab
+    # and CircleCI report them (`is_test_case` left at its default).
     return CIResult(
         pipeline_id="7", pipeline_url="https://b/7", status=PipelineStatus.FAILED,
         jobs=[JobResult(name=n, status="failed") for n in names],
@@ -418,6 +429,106 @@ def test_partial_overlap_routes_to_fix_loop():
     ])
     changed = ["x/AnalyticsExportE2EIT.java"]
     assert _ci_failure_unrelated(ci, changed) is None
+
+
+def test_a_ci_job_name_that_is_not_a_test_id_routes_to_the_fix_loop():
+    # #429: a GitHub Actions job name like "Python" is not a test id; a red
+    # build it reports must NOT be skipped as "unrelated" when a changed test
+    # file could be the cause. Fails on main, which returns the skip evidence.
+    ci = _ci_with_job_failures(["Python"])
+    assert _ci_failure_unrelated(ci, ["tests/test_bounds.py"]) is None
+
+
+def test_a_dotted_python_test_id_that_matches_the_changed_file_is_related():
+    # eyalgolan's control: a real dotted test id that DOES map to the changed
+    # file is related -> None, unchanged by the fix.
+    ci = _ci_with_failures(["tests.test_bounds.test_x"])
+    assert _ci_failure_unrelated(ci, ["tests/test_bounds.py"]) is None
+
+
+def test_real_test_ids_matching_nothing_are_still_unrelated():
+    # AC: Jenkins test-report cases matching no changed file are STILL
+    # reported unrelated, whatever their naming convention (pytest node id,
+    # dotted xUnit, bare class, JUnit method with parens, Rust path).
+    changed = ["src/unrelated_module.py"]
+    for name in ("tests/test_foo.py::test_missing",
+                 "com.acme.billing.InvoiceIT.testTotals",
+                 "SomethingTest",
+                 "com.acme.FooTest.testBar()",
+                 "mycrate::tests::it_works",
+                 "tests/test_x.py::TestC::test_a[a b]"):
+        evidence = _ci_failure_unrelated(_ci_with_failures([name]), changed)
+        assert evidence is not None, name
+        assert name in evidence, name
+
+
+def test_a_job_name_mixed_with_a_real_unrelated_test_is_never_skipped():
+    # AC: one real unrelated test case plus one job-name failure must not
+    # collapse to "unrelated" on the strength of the test case alone.
+    ci = CIResult(
+        pipeline_id="7", pipeline_url="https://b/7", status=PipelineStatus.FAILED,
+        jobs=[JobResult(name="com.acme.billing.InvoiceIT.testTotals",
+                        status="failed", is_test_case=True),
+              JobResult(name="Python", status="failed")],
+    )
+    assert _ci_failure_unrelated(ci, ["tests/test_bounds.py"]) is None
+    # Control: the test case alone, against the same diff, IS unrelated.
+    assert _ci_failure_unrelated(
+        _ci_with_failures(["com.acme.billing.InvoiceIT.testTotals"]),
+        ["tests/test_bounds.py"]) is not None
+
+
+@pytest.mark.parametrize("job_label", [
+    "Python", "build", "lint", "tests", "Unit Tests", "test (3.12)", "testing",
+    "CI / test", "codecov/patch", "continuous-integration/jenkins/pr-merge",
+    "Node.js", "SUBMIT", "Test", "IT", "Tests",
+    # #429 review: job names a name-shape check misread as test ids.
+    "UnitTests", "unitTests", "integrationTest", "test-3.12", "E2ETests",
+    # A job may even be NAMED like a test id; its provenance still says job.
+    "tests/test_x.py::test_a", "com.acme.billing.InvoiceIT.testTotals",
+])
+def test_a_job_or_check_name_is_never_unrelated(job_label):
+    # #429 review (eyalgolan): only a test-report case names a test. A
+    # failure reported under a job/check name (GitHub Actions, GitLab,
+    # CircleCI) maps to no file, so it must never be judged "unrelated" — a
+    # red build a changed file may have caused would be skipped with no fix
+    # round. The diff here matches nothing, so the only difference from the
+    # control below is where the name came from.
+    changed = ["src/unrelated_module.py"]
+    assert _ci_failure_unrelated(_ci_with_job_failures([job_label]), changed) is None
+    # Control: the same name as a Jenkins test case IS unrelated to this diff.
+    assert _ci_failure_unrelated(_ci_with_failures([job_label]), changed) is not None
+
+
+@pytest.mark.parametrize(("test_id", "related_change"), [
+    ("com.acme.FooTest.testBar()", "src/test/java/com/acme/FooTest.java"),
+    ("mycrate::tests::it_works", "src/mycrate.rs"),
+    ("tests/test_x.py::TestC::test_a[a b]", "tests/test_x.py"),
+])
+def test_jenkins_test_case_relatedness_is_unchanged(test_id, related_change):
+    # Jenkins test cases keep main's stem matching: related to a diff that
+    # touches their file, unrelated to one that does not.
+    ci = _ci_with_failures([test_id])
+    assert _ci_failure_unrelated(ci, [related_change]) is None
+    assert _ci_failure_unrelated(ci, ["src/unrelated_module.py"]) is not None
+
+
+async def test_jenkins_failing_test_cases_carry_test_case_provenance():
+    # The flag is set where the names come from: `_failing_tests` turns each
+    # failing testReport case into a JobResult with is_test_case=True, so a
+    # real Jenkins build still reaches the unrelated verdict end to end.
+    fake = FakeJenkins({
+        "api/json": [_meta(result="FAILURE")],
+        "testReport": [_testreport([("com.acme.billing.InvoiceIT", "testTotals",
+                                     "pre-existing")])],
+        "consoleText": ["BUILD FAILED"],
+    })
+    ci = JenkinsCI(JOB, mode="watch", poll_interval=0, _run_cmd=fake)
+    r = await ci.trigger("PR-042")
+    assert [j.name for j in r.jobs] == ["com.acme.billing.InvoiceIT.testTotals"]
+    assert all(j.is_test_case for j in r.jobs)
+    evidence = _ci_failure_unrelated(r, ["src/unrelated_module.py"])
+    assert evidence is not None and "InvoiceIT" in evidence
 
 
 # --------------------------------------------------------------------------- #

@@ -48,6 +48,7 @@ from .taxonomy import (
     user_pause_blocker,
 )
 from .wake import WakeWatcher, parse_duration
+from .cancel_pr_closeout import close_draft_pr_on_cancel
 from .send_back import (
     PENDING_KEY,
     REFUSED_AT_KEY,
@@ -105,6 +106,7 @@ __all__ = [
     "REFUSED_AT_KEY",
     "REFUSED_GATE_KEY",
     "clear_pending_send_back",
+    "close_draft_pr_on_cancel",
     "mark_send_back_refused",
     "record_pending_send_back",
     "refusal_event",

@@ -864,7 +864,8 @@ async def test_ci_unrelated_failure_escalates_immediately(bare_repo, tmp_path, s
     ci_result = CIResult(
         "88", "https://x/88", PipelineStatus.FAILED, infra_failure=False,
         jobs=[JobResult(name="com.acme.billing.InvoiceIT.testTotals",
-                        status="failed", failure_reason="pre-existing")],
+                        status="failed", failure_reason="pre-existing",
+                        is_test_case=True)],
         parsed_output="1 failing test: com.acme.billing.InvoiceIT.testTotals",
     )
     cfg = load_config(tmp_path / "config.yaml")

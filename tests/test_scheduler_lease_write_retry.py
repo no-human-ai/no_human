@@ -18,8 +18,9 @@ claims the row inside the retry window still results in
 
 AC map:
   AC1 — a transient lock retried within budget still lands the claim, and
-        (control, unfixed shape) a budget of exactly 1 attempt reproduces the
-        original permanent wedge.
+        (control) a budget of exactly 1 attempt exhausts the retry — which no
+        longer wedges: `tick()`'s refresh is non-latching and recovers on the
+        next tick (#222).
   AC2 — (a) a lock held through the WHOLE budget still fails closed
         (`PoolLeaseLost`); (b) any non-transient exception fails closed on
         attempt 1, no retry spent on a fault the same write will keep
@@ -176,15 +177,17 @@ async def test_a_transient_lock_on_the_first_write_attempt_still_lands_the_claim
     assert row["pid"] == os.getpid()
 
 
-async def test_the_wedge_before_the_fix_one_lock_stops_every_later_tick(
+async def test_a_budget_exhausted_transient_lock_recovers_on_the_next_tick(
     store, monkeypatch,
 ):
-    """Control: force the retry budget down to 1 attempt (the unfixed write
-    leg's actual shape — no budget at all). The SAME transient, genuinely
-    momentary lock that test 1 rides out now permanently wedges: `tick()`'s
-    per-tick refresh fails once and `_lease_lost` never clears, so every
-    later tick is a strict no-op forever. This is what the bounded retry in
-    the fixed code exists to prevent."""
+    """#222: force the retry budget down to 1 attempt and hit the per-tick
+    refresh's CAS write with a transient lock, so even the bounded retry is
+    exhausted. The refresh did not COMPLETE — which is not proof a sibling
+    owns the lease — so `tick()` records a NON-latching `_lease_refresh_failed`
+    (never the terminal `_lease_lost`) and skips dispatch THIS tick. Once the
+    lock clears, the next tick's refresh lands and the pool recovers. This is
+    the permanent wedge removed: restart is no longer the only way back. (It
+    used to assert `_lease_lost` latched forever — the behaviour #222 fixes.)"""
     monkeypatch.setattr(Scheduler, "_LEASE_WRITE_ATTEMPTS", 1)
     await store.db.execute("PRAGMA busy_timeout = 0")
     sched = _sched(store)
@@ -199,13 +202,14 @@ async def test_the_wedge_before_the_fix_one_lock_stops_every_later_tick(
         lock.release()
 
     assert result == [], "tick() must not dispatch once the refresh fails"
-    assert sched._lease_lost, "a lock with zero retry budget must be recorded as lost"
+    assert sched._lease_lost is None, "a transient lock must NOT latch the pool (#222)"
+    assert sched._lease_refresh_failed  # recorded as a transient refresh failure
 
-    # The lock is long gone, but nothing clears `_lease_lost` — the wedge
-    # this whole fix exists to bound, not eliminate outright (restart is the
-    # only way back, by design; see PLAN.md's explicit OUT OF SCOPE).
+    # The lock is gone now, so the next tick's refresh lands and recovers.
     result2 = await sched.tick()
     assert result2 == []
+    assert sched._lease_lost is None
+    assert sched._lease_refresh_failed is None  # cleared on recovery
 
 
 # --------------------------------------------------------------------------- #

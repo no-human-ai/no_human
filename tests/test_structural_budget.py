@@ -1540,7 +1540,19 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25070 -> 25115 (+45): `_gate_already_satisfied` now gates an
+    # off-ship-ref claim on MERGEABILITY (`check_landability`) before parking
+    # it in AWAITING_APPROVAL (#304), plus the module-level `check_landability`
+    # import. A real CONFLICT sends the round back to the coder to re-cut; an
+    # UNDETERMINABLE result (most often a host that cannot run the merge
+    # check) escalates to a human instead of burning coder rounds. Measured on
+    # this tree with the scanner below.
+    # 25115 -> 25123 (+8, #429): `_ci_failure_unrelated` returns None unless
+    # every failing result is a test-report case (`JobResult.is_test_case`,
+    # set only by Jenkins' `_failing_tests`), so a job/check name such as a
+    # GitHub Actions "Python" job is never judged unrelated to the diff; the
+    # docstring says so. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25123,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1762,10 +1774,13 @@ FROZEN_FILE_LINES = {
     # --yes skip message) instead of counting it as landable.
     # 9267 -> 9269 (+2): thread `head_sha=` into the `land_task(...)` call so
     # a landing refuses to lease against a head nobody reviewed, plus one new
-    # `result.warning` print when the forge-merged check falls back to a
-    # bare close ("nh approve lands a PR as closed, not merged"). Measured on
+    # `result.warning` print for the forge-merge-state outcome. Measured on
     # this tree with the scanner below.
-    "cli/commands.py": 9269,
+    # 9269 -> 9271 (+2): #651 calls `close_draft_pr_on_cancel` from both
+    # `nh task cancel` branches (the cancel and the failed-task re-label), so
+    # a cancelled task's outstanding draft PR is retitled and closed.
+    # Measured on this tree with the scanner below.
+    "cli/commands.py": 9271,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1960,9 +1975,18 @@ FROZEN_FILE_LINES = {
     # below.
     # 6366 -> 6367 (+1): thread `head_sha=` into the `land_task(...)` call in
     # `_merge_task_pr` from the head `_review_pass_evidence` already
-    # resolved, same reason as `cli/commands.py` above ("nh approve lands a
-    # PR as closed, not merged"). Measured on this tree.
-    "api/app.py": 6367,
+    # resolved, so a landing refuses to lease against a head nobody
+    # reviewed. Measured on this tree.
+    # 6367 -> 6379 (+12): #651 schedules `close_draft_pr_on_cancel` as a
+    # background task on the cancel and split endpoints (after the response
+    # and broadcast, so neither waits on the forge), plus the
+    # `BackgroundTasks` parameter and import. Measured on this tree with the
+    # scanner below.
+    # 6379 -> 6384 (+5, #222): the worker-status `healthy`
+    # flag now also drops when a per-tick lease refresh is currently failing
+    # (`lease_refresh_failed`), not only when the lease is terminally lost.
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6384,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2336,11 +2360,16 @@ FROZEN_FILE_LINES = {
     # 2770 -> 2773 (+3), same ticket, "nh approve must never close a landed
     # PR" follow-up: the same comment was wrong again -- it still blamed a
     # "legacy `_close_pr` fallback path" for the CLOSED-but-content-landed
-    # population, but that fallback-close path is now deleted (PR #654);
-    # `land_task` never closes a PR. Reworded to say only what the code
-    # does: a CLOSED state seen here always predates this watcher's poll.
-    # Comment-only; no logic change. Measured on this tree.
-    "blockers/wake.py": 2773,
+    # population, but `land_task` no longer closes a PR as a fallback.
+    # Reworded to say only what the code does: a CLOSED state seen here
+    # always predates this watcher's poll. Comment-only; no logic change.
+    # Measured on this tree.
+    # 2773 -> 2793 (+20, #429): `_CI_INFRA_RE` gained the runner-acquisition
+    # outage sentence, anchored to the start of a line (re.M); the infra
+    # classifier scans EVERY failing check instead of failing[0]; and the
+    # send-back and escalation evidence use the link of the job whose log they
+    # show. Measured on this tree with the scanner below.
+    "blockers/wake.py": 2793,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
@@ -2535,7 +2564,18 @@ FROZEN_FILE_LINES = {
     # additions. Measured on this tree with the scanner below: actual 3253,
     # which is what this entry froze at this point. Later entries would
     # move it further.
-    "core/scheduler.py": 3253,
+    # 3253 -> 3367 (+114, #222): `tick`'s per-tick lease refresh no longer
+    # latches `_lease_lost` on ANY exception. Only a proven
+    # `SiblingSchedulerRunning` takeover stays terminal; any other refresh
+    # failure sets a non-latching `_lease_refresh_failed` that the next
+    # successful refresh clears, reported by a `lease_refresh_failing` branch
+    # + field in `health_snapshot`. The outage stays bounded: `_claim_pool_lease`
+    # stamps `_lease_refreshed_at_mono`/`_lease_refreshed_at_wall` beside each
+    # heartbeat `ts` that lands, and a failing tick latches `_lease_lost` once
+    # the older of the two readings plus the poll interval reaches
+    # `_LEASE_REFRESH_TOLERANCE_S` (= `_HEARTBEAT_STALE_S` / 2), or at once
+    # with no landed write. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3367,
 }
 
 

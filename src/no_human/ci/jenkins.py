@@ -242,6 +242,7 @@ class JenkinsCI(CIBackend):
                         name=name or "unknown",
                         status="failed",
                         failure_reason=(case.get("errorDetails") or "")[:300] or None,
+                        is_test_case=True,
                     ))
         return out
 

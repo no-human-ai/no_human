@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+import pytest
 
 from no_human.blockers.wake import WakeWatcher
 from no_human.core.task import Task, TaskStatus
@@ -541,7 +542,8 @@ async def test_infra_repolls_are_free_no_refetch_no_new_event(store):
 async def test_the_infra_signature_is_one_full_sentence_not_a_prefix(store):
     """Review finding 2026-08-12: partial phrases appear in unrelated failures
     and in pytest echoes of this corpus; a match SUPPRESSES reporting, so the
-    dangerous direction is overmatch. Only the full billing sentence counts."""
+    dangerous direction is overmatch. The billing sentence counts anywhere;
+    the runner-acquisition sentence only at the start of a line."""
     from no_human.blockers.wake import _CI_INFRA_RE
     assert _CI_INFRA_RE.search(_BILLING_LOG)
     assert not _CI_INFRA_RE.search(
@@ -550,6 +552,138 @@ async def test_the_infra_signature_is_one_full_sentence_not_a_prefix(store):
     assert not _CI_INFRA_RE.search(
         "FAILED tests/test_billing.py::test_dunning - recent account payments have failed"
     )
+
+
+async def test_a_runner_acquisition_outage_is_classified_infra(store):
+    """#429: 'The job was not started because it repeatedly failed to be
+    acquired' is a runner-provisioning outage, not the coder's bug — it must
+    match `_CI_INFRA_RE` so the coder is never told to fix a runner outage,
+    which burns a fix round. A normal test failure must still NOT match, and
+    neither must the lookalike upstream-build message pinned above."""
+    from no_human.blockers.wake import _CI_INFRA_RE
+    assert _CI_INFRA_RE.search(
+        "The job was not started because it repeatedly failed to be acquired "
+        "(5 attempts)."
+    )
+    assert not _CI_INFRA_RE.search(
+        "FAILED tests/test_foo.py::test_bar - AssertionError: 1 != 2"
+    )
+    assert not _CI_INFRA_RE.search(
+        "ERROR: The job was not started because the upstream project failed to build."
+    )
+
+
+_RUNNER_OUTAGE = (
+    "The job was not started because it repeatedly failed to be acquired "
+    "(5 attempts)."
+)
+
+
+@pytest.mark.parametrize("real_first", [False, True])
+async def test_a_real_failing_leg_alongside_an_infra_leg_is_not_swallowed(store, real_first):
+    """#429 review (eyalgolan): a runner-acquisition outage on one matrix leg
+    must not mask a genuine failure on another. The watcher used to classify
+    off `failing[0]` alone; now it scans every failing check, so a mixed build
+    (one infra leg, one real test failure) counts a round and resumes the
+    coder rather than parking as infra."""
+    t = await _approval_task(store)
+    events = []
+    infra_leg = {"name": "build (3.11)", "status": "fail",
+                 "link": "https://build.example.com/infra"}
+    real_leg = {"name": "build (3.12)", "status": "fail",
+                "link": "https://build.example.com/real"}
+
+    async def pr_state(url): return "OPEN"
+    async def pr_checks(url):
+        return [real_leg, infra_leg] if real_first else [infra_leg, real_leg]
+    async def ci_log(link):
+        if link.endswith("/infra"):
+            return _RUNNER_OUTAGE
+        return "FAILED tests/test_foo.py::test_bar - AssertionError: 1 != 2"
+    w = WakeWatcher(store, {}, pr_state=pr_state, pr_checks=pr_checks,
+                    ci_log=ci_log,
+                    on_event=lambda k, t2: events.append((k, t2)))
+
+    assert await w._check_open_pr(t) == "resumed"
+    fresh = await store.get_task(t.id)
+    assert fresh.context["pr_ci_rounds"] == 1
+    assert fresh.context["send_back_feedback"][-1]["source"] == "pr_ci"
+    # The send-back shows the REAL leg's log, so it must carry the real leg's
+    # link — not failing[0]'s, which is the infra leg here.
+    message = fresh.context["send_back_feedback"][-1]["message"]
+    assert "Link: https://build.example.com/real\n" in message
+    assert "https://build.example.com/infra" not in message
+    assert "AssertionError: 1 != 2" in message
+    # ...and only the real leg's log: the scan stops at the first non-infra
+    # leg, so a later infra leg's log never replaces it.
+    assert "repeatedly failed to be acquired" not in message
+    assert any(k == "pr_ci_red" for k, _ in events)
+    assert not any(k == "pr_ci_infra" for k, _ in events)
+
+
+async def test_an_escalation_past_the_cap_cites_the_real_legs_link(store):
+    """#429 review: with no log or annotation for the real failing leg, the
+    escalation evidence falls back to a link — the real leg's, not the infra
+    leg that happens to be failing[0]."""
+    t = await _approval_task(store)
+    t.context = await store.merge_context(t.id, {"pr_ci_rounds": 3})
+    infra_leg = {"name": "build (3.11)", "status": "fail",
+                 "link": "https://build.example.com/infra"}
+    real_leg = {"name": "build (3.12)", "status": "fail",
+                "link": "https://build.example.com/real"}
+
+    async def pr_state(url): return "OPEN"
+    async def pr_checks(url): return [infra_leg, real_leg]
+    async def ci_log(link):
+        return _RUNNER_OUTAGE if link.endswith("/infra") else ""
+    w = WakeWatcher(store, {}, pr_state=pr_state, pr_checks=pr_checks,
+                    ci_log=ci_log)
+
+    assert await w._check_open_pr(t) == "escalated_ci"
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    assert fresh.blocker["evidence"] == "https://build.example.com/real"
+
+
+def test_the_runner_outage_phrase_counts_only_at_the_start_of_a_line():
+    """#429 review: a failing test whose output merely ECHOES the outage
+    sentence (this very file contains it) must not read as infra; the
+    platform's own message starts a line — the log line or the annotation's
+    message line (`default_ci_annotations` joins title and message with a
+    newline)."""
+    from no_human.blockers.wake import _CI_INFRA_RE
+    phrase = "The job was not started because it repeatedly failed to be acquired."
+    assert not _CI_INFRA_RE.search(
+        f"E       AssertionError: assert '{phrase}' in out")
+    assert not _CI_INFRA_RE.search(f"FAILED tests/test_x.py::test_y - {phrase}")
+    assert not _CI_INFRA_RE.search(f"echo {phrase}")
+    # Positive controls: at the start of the text, after a newline, and as an
+    # annotation's message line under a title.
+    assert _CI_INFRA_RE.search(phrase)
+    assert _CI_INFRA_RE.search(f"Run tests\n{phrase}")
+    assert _CI_INFRA_RE.search(f"Runner outage\n{phrase}")
+
+
+async def test_every_failing_leg_infra_is_still_classified_infra(store):
+    """Control for the per-check scan: when ALL failing legs are platform
+    outages, the build is still infra — no round counted, no escalation."""
+    t = await _approval_task(store)
+    events = []
+    leg_a = {"name": "build (3.11)", "status": "fail", "link": "https://b/a"}
+    leg_b = {"name": "build (3.12)", "status": "fail", "link": "https://b/b"}
+
+    async def pr_state(url): return "OPEN"
+    async def pr_checks(url): return [leg_a, leg_b]
+    async def ci_log(link): return _RUNNER_OUTAGE
+    w = WakeWatcher(store, {}, pr_state=pr_state, pr_checks=pr_checks,
+                    ci_log=ci_log,
+                    on_event=lambda k, t2: events.append((k, t2)))
+
+    assert await w._check_open_pr(t) is None
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.AWAITING_APPROVAL
+    assert not (fresh.context or {}).get("pr_ci_rounds")
+    assert any(k == "pr_ci_infra" for k, _ in events)
 
 
 async def test_empty_log_with_billing_annotation_is_infra_not_a_round(store):

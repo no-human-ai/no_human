@@ -666,15 +666,34 @@ class Scheduler:
         # rate windows below, so a dashboard can show "N worker deaths since
         # start" even after the last one ages out of every window.
         self._worker_deaths_total = 0
-        # Set (to the failure reason) the moment a per-tick lease REFRESH
-        # fails — never by the startup claim, which raises instead of
-        # setting a flag. Once set, `tick()` stops dispatching immediately
-        # (guard at its top) and `run_forever` exits the loop: a scheduler
-        # that cannot prove it still holds the lease has lost the authority
-        # to dispatch, and continuing would be exactly the fail-open bug
-        # this module exists to close, one level up (per-tick instead of
-        # at-boot).
+        # Set (to the reason) by a per-tick lease refresh in exactly two
+        # cases: a live sibling proved it owns the lease
+        # (`SiblingSchedulerRunning`), or refresh has kept failing for so long
+        # that the heartbeat a sibling reads could reach
+        # `_LEASE_REFRESH_TOLERANCE_S` by the next tick (see `tick`). Any
+        # other refresh failure sets `_lease_refresh_failed` below instead.
+        # Never set by the startup claim, which raises instead of setting a
+        # flag. Once set, `tick()` stops dispatching immediately (guard at its
+        # top) and `run_forever` exits the loop: a scheduler that cannot prove
+        # it still holds the lease has lost the authority to dispatch, and
+        # continuing would be exactly the fail-open bug this module exists to
+        # close, one level up (per-tick instead of at-boot).
         self._lease_lost: str | None = None
+        # #222: a per-tick refresh that did NOT complete (any failure other
+        # than a proven live sibling) — distinct from `_lease_lost`, which is
+        # terminal. This one is non-latching: the tick is a no-op, but the next
+        # successful refresh clears it, so one transient lock no longer stops
+        # the pool until restart.
+        self._lease_refresh_failed: str | None = None
+        # The wall-clock `ts` of the last heartbeat write this process PROVED
+        # landed (`_claim_pool_lease`, boot and every per-tick refresh), and a
+        # `time.monotonic()` taken beside it; None before the first one. A
+        # sibling judges staleness from that `ts`, so a failing refresh is
+        # measured from here, not from when the failures began; `tick` latches
+        # `_lease_lost` once the heartbeat could be `_LEASE_REFRESH_TOLERANCE_S`
+        # old by the next tick.
+        self._lease_refreshed_at_mono: float | None = None
+        self._lease_refreshed_at_wall: float | None = None
         self._db_view_stale = False
         self._db_stale_since: float | None = None
         self._status_write_failures = 0
@@ -739,10 +758,12 @@ class Scheduler:
 
     @property
     def lease_lost(self) -> str | None:
-        """The reason the last per-tick lease REFRESH failed, or None while
-        the lease still holds. Never cleared once set — see `_lease_lost`'s
-        own docstring at its assignment sites; this is a read-only mirror for
-        `health.py`/`api/app.py`, not a new mutation point."""
+        """The reason the pool lease is TERMINALLY lost — a live sibling took
+        it, or the per-tick refresh kept failing until the heartbeat could be
+        `_LEASE_REFRESH_TOLERANCE_S` old by the next tick — or None while the
+        lease still holds. Never cleared once set; a single
+        transient refresh failure sets `_lease_refresh_failed` instead. This is a
+        read-only mirror for `health.py`/`api/app.py`, not a new mutation point."""
         return self._lease_lost
 
     def get_live_status(self, task_id: str) -> str | None:
@@ -1058,6 +1079,23 @@ class Scheduler:
     # `_LEASE_ORPHAN_DIVERGENCE_S` below; `tests/test_scheduler_lease_orphan_window.py`
     # pins it.
     _HEARTBEAT_STALE_S = 300.0
+
+    # `tick`'s per-tick lease refresh only (#222): the oldest the last
+    # successful heartbeat write may get, counting the poll interval until the
+    # next tick, before a failing refresh fails closed and latches
+    # `_lease_lost`. A single failure is transient and must not stop the pool,
+    # but if refresh cannot complete for long enough that a sibling's
+    # `_HEARTBEAT_STALE_S` takeover could begin, a non-dispatching loop whose
+    # workers are still running is the two-pools hazard the lease exists to
+    # prevent. `tick` already adds the poll interval, so the half of the stale
+    # window left over is headroom for the time a tick itself takes and for
+    # the stop drain (`concurrency.stop_grace_s`, default 60s). With a
+    # `poll_interval` at or above this tolerance, any single failing refresh
+    # latches (fail-closed, as before #222). A `stop_grace_s` configured larger
+    # than the remaining headroom can let the drain run past a sibling's stale
+    # window; what guards a live row from being requeued then is
+    # `_STRANDED_GRACE_S`, not this bound.
+    _LEASE_REFRESH_TOLERANCE_S = _HEARTBEAT_STALE_S / 2
 
     # The ACCEPTED divergence between the two questions above, as a first-class
     # value rather than an arithmetic accident: for this many seconds a holder
@@ -1457,6 +1495,12 @@ class Scheduler:
         my_host = platform.node()
         my_token = process_start_token(my_pid)
         now = time.time()
+        # Paired with `now` (the `ts` written below). `tick` ages the
+        # heartbeat by whichever of the two clocks reads OLDER, so its age is
+        # never smaller than what a sibling's wall-clock read of `ts` sees:
+        # wall covers a system sleep (monotonic does not advance through one
+        # on macOS), monotonic covers a backwards wall-clock jump.
+        now_mono = time.monotonic()
         row = await self._read_heartbeat_with_retry()
 
         mine = row is not None and row["pid"] == my_pid and row["host"] == my_host
@@ -1487,6 +1531,8 @@ class Scheduler:
             raise PoolLeaseLost(
                 reason="the CAS write raised", error=exc) from exc
         if landed:
+            self._lease_refreshed_at_mono = now_mono
+            self._lease_refreshed_at_wall = now
             return
 
         # The row was not what we read any more — re-read ONCE (never a
@@ -2005,12 +2051,22 @@ class Scheduler:
             # not evidence any more, and saying so first is the honest report.
             idle_reason = "tick_loop_stalled"
         elif self._lease_lost:
-            # A per-tick refresh failure — this scheduler is UNLEASED and
-            # `tick()` has been returning `[]` ever since. Outranks
+            # A live sibling took the lease, or the per-tick refresh kept
+            # failing past the `_LEASE_REFRESH_TOLERANCE_S` bound — this
+            # scheduler is UNLEASED and `tick()` has been returning `[]` ever
+            # since. Outranks
             # `db_view_stale`/`claimable`/every normal-operation state below
             # for the same reason `tick_loop_stalled` does: once the lease is
             # lost, nothing downstream of it is evidence of normal idleness.
             idle_reason = "lease_lost"
+        elif self._lease_refresh_failed:
+            # A per-tick refresh that did not complete (transient, #222). The
+            # pool is NOT unleased — a later tick retries — but this tick
+            # dispatched nothing, so report the refresh failure rather than a
+            # false "queue_empty". Ranked below `lease_lost` (terminal) and
+            # above the normal-operation states, like the other write-failure
+            # signals.
+            idle_reason = "lease_refresh_failing"
         elif self._db_view_stale:
             # A CONFIRMED observation, so it outranks the probe-failure case
             # below (an ABSENCE of information) and every normal state. The
@@ -2060,6 +2116,7 @@ class Scheduler:
                 None if since_tick is None else round(since_tick, 1)),
             "tick_stalled": tick_stalled,
             "lease_lost": self._lease_lost,
+            "lease_refresh_failed": self._lease_refresh_failed,
             "never_ticked": never_ticked_too_long,
             "seconds_since_start": round(time.time() - self._created_at, 1),
             "tick_stall_threshold_s": stall_after,
@@ -2145,19 +2202,76 @@ class Scheduler:
         # branch is exactly this refresh — the startup call already got the
         # loud, propagating check; this one, on failure, marks the pool
         # UNLEASED rather than swallowing a warning and continuing to
-        # dispatch: a holder that cannot refresh its lease has lost it, and
+        # dispatch: a holder that cannot refresh its lease for long enough has
+        # lost it (a single failure is transient and retried, #222), and
         # silently soldiering on is exactly the fail-open bug this fix
         # exists to close, one level up (per-tick instead of at-boot).
         try:
             await self._claim_pool_lease()
-        except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
+        except SiblingSchedulerRunning as exc:
+            # A LIVE sibling proved it now owns the lease — terminal. This
+            # process is no longer the leader; latch and stop dispatching for
+            # good (`run_forever` stops the loop). This is the one case that
+            # genuinely means the lease is lost.
             self._lease_lost = str(exc)
             log.error(
                 "pool lease LOST (%s) — this scheduler is UNLEASED and "
-                "will stop dispatching; a sibling may now claim the pool",
+                "will stop dispatching; a sibling now owns the pool",
                 exc)
             self._on_event("pool_lease_lost", str(exc))
             return []
+        except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
+            # The refresh did NOT complete — any failure other than a proven
+            # live sibling: a same-db lock past the CAS retry budget, a disk
+            # I/O error, an unreadable or missing row, a CAS-rejected write.
+            # That says the write did not land, not that someone else owns the
+            # lease, so a SINGLE failure must NOT latch `_lease_lost` (one
+            # transient `database is locked` used to stop the pool for the
+            # process's life, #222): skip dispatch THIS tick and retry next, and
+            # the success path below clears it the moment refresh recovers.
+            #
+            # But do not retry FOREVER. A loop that never dispatches yet never
+            # stops, while its in-flight workers keep going, lets our heartbeat
+            # go stale; once it passes `_HEARTBEAT_STALE_S` a sibling can take
+            # the lease and requeue rows our workers still hold — the two-pools
+            # case. A sibling ages the `ts` of our last heartbeat write that
+            # LANDED, so measure from that write, and add the poll interval:
+            # the next chance to latch is a whole tick away, and the heartbeat
+            # keeps ageing until then. Fail closed and latch `_lease_lost` as
+            # soon as the heartbeat could be `_LEASE_REFRESH_TOLERANCE_S` old by
+            # the next tick. The age is the larger of the monotonic and the
+            # wall-clock reading (see `_claim_pool_lease`), never less than a
+            # sibling's. With no proven write at all there is nothing to age,
+            # so that also latches.
+            last_mono = self._lease_refreshed_at_mono
+            last_wall = self._lease_refreshed_at_wall
+            age = (None if last_mono is None or last_wall is None
+                   else max(time.monotonic() - last_mono,
+                            time.time() - last_wall))
+            if age is None or age + self._poll_interval >= self._LEASE_REFRESH_TOLERANCE_S:
+                age_text = ("no heartbeat write has landed" if age is None
+                            else f"last heartbeat write landed {age:.0f}s ago")
+                self._lease_lost = (
+                    f"lease refresh failing, {age_text} (poll interval "
+                    f"{self._poll_interval:.0f}s, tolerance "
+                    f"{self._LEASE_REFRESH_TOLERANCE_S:.0f}s): {exc}")
+                log.error(
+                    "pool lease refresh failing and %s (poll interval %.0fs, "
+                    "tolerance %.0fs) — failing closed and stopping dispatch "
+                    "before a sibling can take the pool: %s",
+                    age_text, self._poll_interval,
+                    self._LEASE_REFRESH_TOLERANCE_S, exc)
+                self._on_event("pool_lease_lost", self._lease_lost)
+                return []
+            self._lease_refresh_failed = str(exc)
+            log.warning(
+                "pool lease refresh did not complete (%s) — skipping dispatch "
+                "this tick; will retry next tick", exc)
+            self._on_event("pool_lease_refresh_failed", str(exc))
+            return []
+        # The refresh landed (`_claim_pool_lease` stamped
+        # `_lease_refreshed_at_mono`), so the failure, if any, is over.
+        self._lease_refresh_failed = None
         if self.wake is not None:
             try:
                 # Pass the claimed set so the stuck-active sweep judges only

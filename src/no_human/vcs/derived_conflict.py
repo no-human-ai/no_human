@@ -198,21 +198,57 @@ async def resolve_base_tip(repo_path: str, base: str) -> str | None:
     return sha.strip() if rc == 0 and sha.strip() else None
 
 
+async def _resolvable_branch_ref(repo_path: str, branch: str) -> str | None:
+    """``branch`` as git can resolve it here, trying the bare name first and
+    then ``origin/<branch>``, or ``None`` if neither resolves.
+
+    A task's delivery branch is pushed and then usually has no LOCAL ref — it
+    exists only as a remote-tracking ``origin/<branch>`` ref, when one is
+    present (the wake conflict handler probes once before its own fetch retry,
+    so there may be none yet). The bare name then fails ``rev-parse``, so
+    `conflicting_paths` returned ``None`` and the wake conflict handler
+    escalated with an unresolvable ref even after its fetch retry (``git fetch
+    origin <base> <branch>`` updates only ``origin/<branch>``), although the
+    pushed head merges fine (#512, its "sharper" half). The remote-tracking
+    ref is local — no fetch here, matching `check_landability`'s contract —
+    and names the same pushed head, so it answers the question the bare name
+    could not. A branch
+    that is already local keeps resolving by its bare name, unchanged, and one
+    already written ``origin/<x>`` is found by the first probe. The shared
+    `refs_resolvable` is used only as the read-only probe it already is; its
+    telemetry semantics are untouched.
+
+    This is the same bare-then-``origin/`` ladder `GitRepo.resolve_commitish`
+    already walks, so the conflict ENUMERATION here now agrees with the
+    resolver (`resolve_derived_conflict`) that acts on it.
+    """
+    candidates = [branch]
+    if not branch.startswith("origin/"):
+        candidates.append(f"origin/{branch}")
+    for ref in candidates:
+        if await refs_resolvable(repo_path, ref):
+            return ref
+    return None
+
+
 async def conflicting_paths(repo_path: str, base_tip: str,
                             branch: str) -> set[str] | None:
     """The set of paths `git merge-tree` reports as conflicted for merging
     ``base_tip`` into ``branch``, or ``None`` when the question could not be
     asked at all (git missing, unresolvable refs, unparseable output) — a
     thin wrapper over `pr_watcher.merge_tree_conflicts` that resolves
-    ``base_tip`` through `resolve_base_tip` first."""
+    ``base_tip`` through `resolve_base_tip` first, and ``branch`` through
+    `_resolvable_branch_ref` (so a remote-only delivery branch is answered
+    against its ``origin/`` ref rather than degrading to ``unknown``, #512)."""
     if not repo_path or not branch or not base_tip:
         return None
-    if not await refs_resolvable(repo_path, branch):
+    ref = await _resolvable_branch_ref(repo_path, branch)
+    if ref is None:
         return None
     resolved_base = await resolve_base_tip(repo_path, base_tip)
     if resolved_base is None:
         return None
-    result = await merge_tree_conflicts(repo_path, branch, resolved_base)
+    result = await merge_tree_conflicts(repo_path, ref, resolved_base)
     if result is None:
         return None
     return result[1]

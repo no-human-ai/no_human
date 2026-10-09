@@ -810,3 +810,347 @@ def test_reconcile_still_refuses_an_absent_ok_row_that_resolves_twice(tmp_path):
     _recons, unfixable = ra.reconcile_plan(mod, [row])
     assert [u.reason for u in unfixable] == [
         "source path does not resolve to exactly one file"]
+
+
+# --------------------------------------------------------------------------- #
+# Issue #502: --apply mixed case and refused-file reporting.                  #
+# --------------------------------------------------------------------------- #
+
+def test_apply_mixed_fixable_and_legacy_citations_writes_fixable_and_reports_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """Part of issue #502: Pin the mixed case — one fixable drifted symbol citation
+    plus one unfixable legacy line-only citation across distinct documents.
+    `--apply` must rewrite the fixable citation in both doc and CITATION_TABLE,
+    report the legacy citation as unfixable, plainly report both the Modified:
+    and the Refused (citations left unchanged): files without mixing them up,
+    and exit 1 (VERDICT=FAIL)."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_fixable = tmp_path / "docs" / "fixable.md"
+    doc_legacy = tmp_path / "docs" / "legacy.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    widget_path = tmp_path / "widget.py"
+
+    doc_fixable.write_text("See `widget.py:foo:5`.\n", encoding="utf-8")
+    doc_legacy.write_text("See legacy `widget.py:10`.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),\n'
+        '    ("legacy.md", "widget.py:10", "widget.py", "token_legacy"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    widget_path.write_text(
+        "# pad 1\n# pad 2\n# pad 3\ndef foo():\n    return 'token_foo'\n# token_legacy\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),
+            ("legacy.md", "widget.py:10", "widget.py", "token_legacy"),
+        ),
+        _CITATION_DOC_PATHS={"fixable.md": doc_fixable, "legacy.md": doc_legacy},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: int(tail.rsplit(":", 1)[1]),
+        _resolve_source=lambda path: [widget_path],
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 4 if sym == "foo" else None,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--apply"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Applied 1 re-anchor(s)." in stdout
+    assert "Modified:" in stdout
+    assert "docs/fixable.md" in stdout
+    assert "tests/test_readme_claims.py" in stdout
+    assert "Refused (citations left unchanged):" in stdout
+    assert "docs/legacy.md" in stdout
+    assert "docs/fixable.md" not in stdout.split("Refused (citations left unchanged):")[1]
+    assert "FAIL: legacy.md `widget.py:10`" in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+
+    # Fixable was written to both surfaces; legacy was untouched
+    new_fixable = doc_fixable.read_text(encoding="utf-8")
+    assert "`widget.py:foo:4`" in new_fixable
+    assert "`widget.py:foo:5`" not in new_fixable
+    assert doc_legacy.read_text(encoding="utf-8") == "See legacy `widget.py:10`.\n"
+
+    new_table = table_path.read_text(encoding="utf-8")
+    assert '"widget.py:foo:4"' in new_table
+    assert '"widget.py:foo:5"' not in new_table
+    assert '"widget.py:10"' in new_table
+
+
+def test_apply_ambiguous_drift_aborts_batch_and_reports_all_docs_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """When one drift in a batch is ambiguous, the whole batch is aborted:
+    nothing is written, the Refused (citations left unchanged): list names
+    every document in the batch, including the one with an unfixable legacy
+    citation, and the unfixable count is still reported."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_fixable = tmp_path / "docs" / "fixable.md"
+    doc_ambig = tmp_path / "docs" / "ambig.md"
+    doc_legacy = tmp_path / "docs" / "legacy.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    widget_path = tmp_path / "widget.py"
+
+    doc_fixable.write_text("See `widget.py:foo:5`.\n", encoding="utf-8")
+    # Duplicate citation in doc_ambig causes rewrite() to return None (ambiguous)
+    doc_ambig.write_text(
+        "See `widget.py:bar:10` and again `widget.py:bar:10`.\n", encoding="utf-8"
+    )
+    doc_legacy.write_text("See legacy `widget.py:2`.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),\n'
+        '    ("ambig.md", "widget.py:bar:10", "widget.py", "token_bar"),\n'
+        '    ("legacy.md", "widget.py:2", "widget.py", "token_foo"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    widget_path.write_text(
+        "def foo():\n    return 'token_foo'\ndef bar():\n    return 'token_bar'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    before_fixable = doc_fixable.read_text(encoding="utf-8")
+    before_ambig = doc_ambig.read_text(encoding="utf-8")
+    before_legacy = doc_legacy.read_text(encoding="utf-8")
+    before_table = table_path.read_text(encoding="utf-8")
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),
+            ("ambig.md", "widget.py:bar:10", "widget.py", "token_bar"),
+            ("legacy.md", "widget.py:2", "widget.py", "token_foo"),
+        ),
+        _CITATION_DOC_PATHS={
+            "fixable.md": doc_fixable, "ambig.md": doc_ambig, "legacy.md": doc_legacy,
+        },
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: int(tail.rsplit(":", 1)[1]),
+        _resolve_source=lambda path: [widget_path],
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 1 if sym == "foo" else 3,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--apply"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Nothing written: an ambiguous citation aborted the batch." in stdout
+    assert "Modified:" not in stdout
+    assert "Refused (citations left unchanged):" in stdout
+    refused_section = stdout.split("Refused (citations left unchanged):")[1]
+    assert "docs/ambig.md" in refused_section
+    assert "docs/fixable.md" in refused_section
+    assert "docs/legacy.md" in refused_section
+    assert "FAIL: legacy.md `widget.py:2`" in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+
+    # Nothing written to any file
+    assert doc_fixable.read_text(encoding="utf-8") == before_fixable
+    assert doc_ambig.read_text(encoding="utf-8") == before_ambig
+    assert doc_legacy.read_text(encoding="utf-8") == before_legacy
+    assert table_path.read_text(encoding="utf-8") == before_table
+
+
+def test_apply_all_unfixable_reports_refused_files_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """When all findings are unfixable legacy citations, the Refused
+    (citations left unchanged): list names the affected files, Modified: is not printed, and tree is untouched."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    widget_path = tmp_path / "widget.py"
+
+    doc_path.write_text("See `widget.py:10`.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:10", "widget.py", "token_legacy"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    widget_path.write_text("# line 10 token_legacy\n", encoding="utf-8")
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(("fake.md", "widget.py:10", "widget.py", "token_legacy"),),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: 10,
+        _resolve_source=lambda path: [widget_path],
+        _token_line_in_symbol=lambda text, sym, tok, path=None: None,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    before_doc = doc_path.read_bytes()
+    before_table = table_path.read_bytes()
+
+    ret = ra.main(["--apply"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Modified:" not in stdout
+    assert "Refused (citations left unchanged):" in stdout
+    assert "docs/fake.md" in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+    assert (doc_path.read_bytes(), table_path.read_bytes()) == (before_doc, before_table)
+
+
+def test_reconcile_mixed_fixable_and_legacy_citations_writes_fixable_and_reports_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """`--reconcile` mirror of the `--apply` mixed case: the fixable symbol
+    citation is reconciled in both doc and CITATION_TABLE, the legacy
+    line-only citation is left unchanged and listed under Refused (citations
+    left unchanged): only, the unfixable count is reported, and the run exits
+    1 (VERDICT=FAIL)."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_fixable = tmp_path / "docs" / "fixable.md"
+    doc_legacy = tmp_path / "docs" / "legacy.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    widget_path = tmp_path / "widget.py"
+
+    doc_fixable.write_text("See `widget.py:foo:5`.\n", encoding="utf-8")
+    doc_legacy.write_text("See legacy `widget.py:10`.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),\n'
+        '    ("legacy.md", "widget.py:10", "widget.py", "token_legacy"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    widget_path.write_text(
+        "# pad 1\n# pad 2\n# pad 3\ndef foo():\n    return 'token_foo'\n# token_legacy\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),
+            ("legacy.md", "widget.py:10", "widget.py", "token_legacy"),
+        ),
+        _CITATION_DOC_PATHS={"fixable.md": doc_fixable, "legacy.md": doc_legacy},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: int(tail.rsplit(":", 1)[1]),
+        _resolve_source=lambda path: [widget_path],
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 4 if sym == "foo" else None,
+        _ABSENT_OK=frozenset(),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Reconciled 1 citation(s)." in stdout
+    assert "Nothing written" not in stdout
+    modified_section, refused_section = stdout.split("Modified:")[1].split(
+        "Refused (citations left unchanged):")
+    assert "docs/fixable.md" in modified_section
+    assert "tests/test_readme_claims.py" in modified_section
+    assert "docs/legacy.md" in refused_section
+    assert "docs/fixable.md" not in refused_section
+    assert "FAIL: legacy.md `widget.py:10`" in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+
+    new_fixable = doc_fixable.read_text(encoding="utf-8")
+    assert "`widget.py:foo:4`" in new_fixable
+    assert "`widget.py:foo:5`" not in new_fixable
+    assert doc_legacy.read_text(encoding="utf-8") == "See legacy `widget.py:10`.\n"
+
+    new_table = table_path.read_text(encoding="utf-8")
+    assert '"widget.py:foo:4"' in new_table
+    assert '"widget.py:foo:5"' not in new_table
+    assert '"widget.py:10"' in new_table
+
+
+def test_reconcile_ambiguous_citation_aborts_batch_and_reports_all_docs_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """`--reconcile` mirror of the `--apply` abort: one ambiguous citation
+    aborts the whole batch, nothing is written, the Refused (citations left
+    unchanged): list names every document in the batch, and the unfixable
+    count is still reported."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_fixable = tmp_path / "docs" / "fixable.md"
+    doc_ambig = tmp_path / "docs" / "ambig.md"
+    doc_legacy = tmp_path / "docs" / "legacy.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    widget_path = tmp_path / "widget.py"
+
+    doc_fixable.write_text("See `widget.py:foo:5`.\n", encoding="utf-8")
+    # Two occurrences of the same symbol citation: rewrite_reconcile() will
+    # not guess which one to reconcile, so it returns None (ambiguous).
+    doc_ambig.write_text(
+        "See `widget.py:bar:10` and again `widget.py:bar:10`.\n", encoding="utf-8"
+    )
+    doc_legacy.write_text("See legacy `widget.py:2`.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),\n'
+        '    ("ambig.md", "widget.py:bar:10", "widget.py", "token_bar"),\n'
+        '    ("legacy.md", "widget.py:2", "widget.py", "token_foo"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    widget_path.write_text(
+        "def foo():\n    return 'token_foo'\ndef bar():\n    return 'token_bar'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    before = {p: p.read_bytes() for p in (doc_fixable, doc_ambig, doc_legacy, table_path)}
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fixable.md", "widget.py:foo:5", "widget.py", "token_foo"),
+            ("ambig.md", "widget.py:bar:10", "widget.py", "token_bar"),
+            ("legacy.md", "widget.py:2", "widget.py", "token_foo"),
+        ),
+        _CITATION_DOC_PATHS={
+            "fixable.md": doc_fixable, "ambig.md": doc_ambig, "legacy.md": doc_legacy,
+        },
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: int(tail.rsplit(":", 1)[1]),
+        _resolve_source=lambda path: [widget_path],
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 1 if sym == "foo" else 3,
+        _ABSENT_OK=frozenset(),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Nothing written: an ambiguous citation aborted the batch." in stdout
+    assert "Reconciled" not in stdout
+    assert "Modified:" not in stdout
+    refused_section = stdout.split("Refused (citations left unchanged):")[1]
+    assert "docs/ambig.md" in refused_section
+    assert "docs/fixable.md" in refused_section
+    assert "docs/legacy.md" in refused_section
+    assert "FAIL: ambig.md `widget.py:bar:10`" in stdout
+    assert "FAIL: legacy.md `widget.py:2`" in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout
+
+    assert {p: p.read_bytes() for p in before} == before

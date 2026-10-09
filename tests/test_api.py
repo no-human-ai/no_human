@@ -2666,6 +2666,49 @@ async def test_worker_status_reports_unhealthy_when_lease_lost(client):
     assert body["healthy"] is False, "a lost lease must never read as healthy"
 
 
+async def test_worker_status_reports_unhealthy_when_lease_refresh_failing(client):
+    """#222: a per-tick lease refresh that did not complete is NON-latching
+    (`lease_refresh_failed`, not `lease_lost`), but dispatch is suspended for
+    that tick, so the `healthy` boolean must fall for it too — before it ever
+    latches `lease_lost`. Twin of the `lease_lost` test above."""
+    from types import SimpleNamespace
+
+    from no_human.api.app import app as fastapi_app
+
+    def _snapshot(lease_refresh_failed):
+        return {"lease_lost": None,
+                "lease_refresh_failed": lease_refresh_failed,
+                "tick_stalled": False,
+                "db_view_stale": False,
+                "consecutive_probe_failures": 0,
+                "consecutive_status_write_failures": 0}
+
+    fastapi_app.state.watcher_error = None
+    fastapi_app.state.worker_error = None
+    try:
+        # Control, in the same test: everything else identical and
+        # `lease_refresh_failed` falsy reads healthy, so the `False` below is
+        # caused by `lease_refresh_failed` specifically.
+        fastapi_app.state.scheduler = SimpleNamespace(
+            inflight=set(), max_workers=4,
+            health_snapshot=lambda: _snapshot(None))
+        control = await client.get("/api/worker/status")
+        assert control.json()["healthy"] is True
+
+        fastapi_app.state.scheduler = SimpleNamespace(
+            inflight=set(), max_workers=4,
+            health_snapshot=lambda: _snapshot("database is locked"))
+        r = await client.get("/api/worker/status")
+    finally:
+        del fastapi_app.state.scheduler
+
+    body = r.json()
+    assert body["lease_refresh_failed"] == "database is locked"
+    assert body["lease_lost"] is None
+    assert body["healthy"] is False, (
+        "a failing lease refresh must never read as healthy")
+
+
 async def test_board_query_is_not_n_plus_1(client, store, monkeypatch):
     """B2 #16: the board issued one attempts query PER TASK, every 2s, per
     socket. It must now use a single grouped query regardless of task count."""
