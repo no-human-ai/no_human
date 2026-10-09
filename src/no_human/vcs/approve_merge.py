@@ -7,7 +7,12 @@ identity (``git.approve_identity``), never the agent's, and only in response
 to an explicit human `nh approve` / API call. The agent itself still never
 merges anything (constraint #2 is unchanged).
 
-The eight-step procedure, proven by hand before this module existed:
+The nine-step procedure. Steps 7-8's ordering (push the PR's own head branch
+to the landed sha BEFORE pushing the default branch, never after) was proven
+empirically against a real PR (#652, operator hard rule 2026-10-09): pushing
+a head that is already on the default branch gets the PR reported CLOSED,
+not MERGED — only pushing the head branch first, then fast-forwarding the
+default branch onto that same sha, makes GitHub report MERGED.
 
   1. preconditions   — config enabled, a PR exists, `gh` is on PATH, the
                         branch resolves, and the squash subject the task
@@ -64,16 +69,66 @@ The eight-step procedure, proven by hand before this module existed:
                         a conflict round changes the tree, and the attempt's
                         full-suite evidence is only ever attached to the
                         tree it actually ran on.
-  7. push             — re-check the tip has not moved, then push the landed
-                        commit straight onto the remote's default branch ref
-                        (a non-force push, so a raced tip is refused by git
-                        itself as well as by the re-check); verify the
-                        remote ref actually advanced.
-  8. close_pr         — close the PR without a comment (a comment re-wakes
-                        the watcher — ticket b1fd13ca); idempotent on an
-                        already-closed/merged PR; a failure here is a
-                        non-fatal warning — the code is already on the
-                        default branch.
+  7. push_head        — force-with-lease the landed squash sha onto the
+                        PR's OWN head branch (`refs/heads/<branch>`), lease
+                        keyed to the exact head this run reviewed/landed
+                        from. This is what makes GitHub report the PR
+                        MERGED rather than CLOSED once step 8 pushes the
+                        same sha to the default branch: a PR is MERGED only
+                        when its HEAD commit is reachable from base, and
+                        pushing a head that is already on the default
+                        branch BEFORE updating the head gets CLOSED instead
+                        (operator hard rule, 2026-10-09; see PR #652). Two
+                        kinds of refusal land here. One is NOT a lease
+                        failure at all: the branch itself is
+                        `never_push_to`-protected, checked and refused
+                        before any push is attempted. The other IS the
+                        lease: it fails not only when someone genuinely
+                        force-pushed the branch since this run resolved
+                        `expected_head`, but also when the branch is simply
+                        missing from `origin` altogether — git's explicit
+                        `--force-with-lease=<ref>:<sha>` form rejects a
+                        missing ref as "stale info" exactly like a ref at
+                        the wrong sha, so a head branch absent from the
+                        remote now refuses here too, with no special-casing
+                        needed. Either refusal leaves the default branch
+                        and the PR both untouched.
+  8. push             — re-check the tip has not moved, then push the
+                        landed commit straight onto the remote's default
+                        branch ref (a non-force push, so a raced tip is
+                        refused by git itself as well as by the re-check);
+                        verify the remote ref actually advanced. By this
+                        point step 7 has already updated the PR's head, so
+                        a failure here attempts to restore that head branch
+                        back to the sha it carried before this run (leased
+                        against the sha step 7 just pushed, via the same
+                        `_push_pr_head` helper with its two sha arguments
+                        swapped) — otherwise a retry would re-resolve
+                        `expected_head` from the LOCAL branch (still the old
+                        reviewed head) while the remote head branch carries
+                        the NEW, unreviewed squash sha, and its lease would
+                        fail forever. The result says "retry" only when
+                        that restore itself succeeds; if the restore also
+                        fails, it reports that the head branch is stuck and
+                        needs manual repair, not another `nh approve`. The
+                        PR is left OPEN either way — never MERGED, never
+                        closed, by this step.
+  9. close_pr         — poll the forge (`gh pr view --json state,mergedAt` /
+                        `glab mr view`) for up to `merge_poll_timeout_seconds`
+                        (default ~30s, with backoff) for it to report the PR
+                        MERGED — the normal outcome once step 7 updated its
+                        head, but GitHub's own merge bookkeeping lags the
+                        base-branch push by observably ~1s (PR #652), so a
+                        single immediate read risks seeing OPEN and closing
+                        a PR that was about to show MERGED, which is exactly
+                        the outcome this whole module exists to prevent.
+                        Only when the forge still does NOT report MERGED
+                        once that budget is exhausted does this fall back
+                        to the legacy close-without-comment path (a comment
+                        re-wakes the watcher — ticket b1fd13ca); idempotent
+                        on an already-closed/merged PR; reported as a
+                        non-fatal `warning` — the code is already on the
+                        default branch either way.
 
 WHY ONLY RELEASE_MANIFEST.txt GETS THIS TREATMENT
 --------------------------------------------------
@@ -143,18 +198,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from ..agent.session_mark import current_mark
 from ..proc import _VENV_INTERPRETERS, real_python
-from .git import GitError, GitRepo, ProtectedBranch
+from .git import GitError, GitRepo, ProtectedBranch, _branch_protected
 from .pr_watcher import parse_pr_url
 
 STEPS = (
     "preconditions", "fetch", "worktree", "squash", "manifest",
-    "commit", "verify", "tests", "push", "close_pr",
+    "commit", "verify", "tests", "push_head", "push", "close_pr",
 )
 
 _STDERR_CAP = 4000
@@ -197,6 +253,12 @@ class LandResult:
     #: Human-readable reason behind ``gate`` — also folded into ``message``
     #: on success and into ``stderr`` on a tests-step failure.
     gate_reason: str = ""
+    #: Non-empty only when a successful land (``ok=True``) had to fall back
+    #: to the legacy close-without-comment path because the forge did not
+    #: report the PR MERGED after step 7's head-branch push — see step 9 in
+    #: the module docstring. Always folded into ``message`` as well, so a
+    #: caller that only prints ``message`` still sees it.
+    warning: str = ""
 
 
 def _cap(text: str) -> str:
@@ -829,6 +891,203 @@ def _close_pr(pr_url: str, cwd: Path) -> str:
     return ""
 
 
+def _forge_merge_state(pr_url: str, cwd: Path) -> tuple[str, str]:
+    """Read-only, best-effort: ask the forge whether *pr_url* is already
+    MERGED. Returns ``(state, note)``.
+
+    ``state`` is ``"MERGED"`` only when the forge's own `state` field is
+    `MERGED` AND it also reports a non-empty `mergedAt` — GitHub's real API
+    never produces `MERGED` with an empty `mergedAt`, but this helper treats
+    that combination as NOT confirmed-merged anyway (conservative: an
+    ambiguous reading must fall through to the `_close_pr` fallback, never
+    skip it). Any other outcome returns the forge's literal state (`"OPEN"`,
+    `"CLOSED"`, or `""` if it could not be determined at all) with ``note``
+    explaining why (tool missing, network/timeout, unparseable JSON, or the
+    ambiguous MERGED-with-no-mergedAt case) — the caller folds ``note`` into
+    the fallback-close warning. Mirrors `_close_pr`'s cwd/exception contract
+    exactly: never raises.
+
+    *cwd* is an explicit, guaranteed-existing directory — see `_close_pr`'s
+    docstring for why (gh/glab address `--repo`/`-R <slug>` explicitly; the
+    directory is never read as a git repo, but subprocess still requires it
+    to exist)."""
+    parsed = parse_pr_url(pr_url)
+    if not parsed:
+        return "", "could not parse PR URL"
+    forge, host, slug, number = parsed
+
+    if forge == "gitlab":
+        if not shutil.which("glab"):
+            return "", "glab not found"
+        try:
+            proc = _sh(["glab", "mr", "view", str(number), "-R", slug],
+                       cwd=cwd, timeout=_GH_TIMEOUT_S)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return "", f"could not read state ({exc})"
+        if proc.returncode != 0:
+            return "", f"glab mr view failed: {proc.stderr.strip()[:200]}"
+        out = (proc.stdout or "").lower()
+        if "state:\tmerged" in out:
+            return "MERGED", ""
+        if "state:\tclosed" in out:
+            return "CLOSED", ""
+        return "OPEN", ""
+
+    if not shutil.which("gh"):
+        return "", "gh not found"
+    repo_arg = f"{host}/{slug}"
+    try:
+        proc = _sh(
+            ["gh", "pr", "view", str(number), "--repo", repo_arg,
+             "--json", "state,mergedAt"],
+            cwd=cwd, timeout=_GH_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return "", f"could not read state ({exc})"
+    if proc.returncode != 0:
+        return "", f"gh pr view failed: {proc.stderr.strip()[:200]}"
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return "", "could not parse gh pr view output"
+    state_raw = str(data.get("state") or "").upper()
+    merged_at = data.get("mergedAt")
+    if state_raw == "MERGED" and isinstance(merged_at, str) and merged_at.strip():
+        return "MERGED", ""
+    if state_raw == "MERGED":
+        return "", "forge reports MERGED but mergedAt is empty"
+    return state_raw, ""
+
+
+# Default poll budget for `_poll_forge_merge_state` below: GitHub marks a PR
+# merged ASYNCHRONOUSLY relative to the base-branch push that makes it
+# mergeable (observed ~1s lag on PR #652) — a single immediate read can see
+# OPEN when the forge is seconds away from reporting MERGED, which would
+# trigger a fallback-close of a PR that was about to show merged. These are
+# module globals (not literals inlined at the call site) so a test can lower
+# them for speed without needing to pass new `land_task` parameters through
+# every layer; production callers get the real ~30s budget by default.
+_MERGE_POLL_TIMEOUT_S = 30.0
+_MERGE_POLL_INITIAL_INTERVAL_S = 1.0
+_MERGE_POLL_MAX_INTERVAL_S = 8.0
+
+
+def _poll_forge_merge_state(
+    pr_url: str,
+    cwd: Path,
+    *,
+    timeout: float = _MERGE_POLL_TIMEOUT_S,
+    initial_interval: float = _MERGE_POLL_INITIAL_INTERVAL_S,
+    max_interval: float = _MERGE_POLL_MAX_INTERVAL_S,
+) -> tuple[str, str]:
+    """Poll `_forge_merge_state` with exponential backoff for up to
+    *timeout* seconds, returning as soon as it reports MERGED (or the budget
+    runs out). Exists because the forge's own MERGED bookkeeping lags the
+    base-branch push that makes a PR mergeable — see the module-global
+    comment above. `timeout <= 0` makes this a single immediate read, which
+    is what every caller that does not care about the race gets by default
+    (see `land_task`'s `_land_in_worktree` call, which reads the poll budget
+    from `config["approve_merge"]["merge_poll_timeout_seconds"]`).
+
+    Looks up `_forge_merge_state` through the module global on every call
+    (a bare name reference inside the function body, resolved at call time,
+    never bound to a local or a default-arg at import time) so
+    `monkeypatch.setattr(approve_merge, "_forge_merge_state", fake)` is
+    effective in tests. Sleeps via the plain `time` module import (not an
+    injectable callable) — tests make this instant by monkeypatching
+    `approve_merge.time.sleep` directly, and by setting `timeout=0` in most
+    cases, which skips sleeping altogether."""
+    state, note = _forge_merge_state(pr_url, cwd)
+    if state == "MERGED" or timeout <= 0:
+        return state, note
+    deadline = time.monotonic() + timeout
+    interval = initial_interval
+    while time.monotonic() < deadline:
+        time.sleep(min(interval, max(deadline - time.monotonic(), 0)))
+        state, note = _forge_merge_state(pr_url, cwd)
+        if state == "MERGED":
+            return state, note
+        interval = min(interval * 2, max_interval)
+    return state, note
+
+
+def _push_pr_head(repo: GitRepo, remote: str, branch: str, landed_sha: str,
+                   expected_head: str) -> str:
+    """Force-with-lease *landed_sha* onto the PR's own head branch
+    (`refs/heads/<branch>`) so GitHub can recognise the PR's HEAD as
+    reachable from base once the caller pushes that same sha to the default
+    branch — see the module docstring, step 7. Returns ``""`` on success, a
+    capped failure string otherwise. Never raises.
+
+    The lease is the EXPLICIT `--force-with-lease=refs/heads/<branch>:
+    <expected_head>` form, not `GitRepo.push()`'s tracking-ref form —
+    `GitRepo.push`'s docstring explains why a tracking-ref lease would be
+    vacuous here: `land_task` already called `repo.fetch(remote)` earlier in
+    this same run (step 2), which updates the local tracking ref and would
+    make a bare `--force-with-lease` compare the remote against itself.
+    *expected_head* must be the sha this run actually reviewed/landed from,
+    so a branch someone force-pushed since is refused by git itself, not
+    just by this function's own idempotency check."""
+    if _branch_protected(branch, repo.never_push_to):
+        return (f"refusing to force-push the PR head branch {branch!r}: it "
+                "matches never_push_to")
+    ls_proc = _sh(["git", "ls-remote", remote, f"refs/heads/{branch}"], cwd=repo.path)
+    current = (ls_proc.stdout.split() or [""])[0]
+    if current == landed_sha:
+        return ""  # already on the landed sha — idempotent re-run
+    push_proc = _sh(
+        ["git", "push",
+         f"--force-with-lease=refs/heads/{branch}:{expected_head}",
+         remote, f"{landed_sha}:refs/heads/{branch}"],
+        cwd=repo.path,
+    )
+    if push_proc.returncode != 0:
+        return _cap(push_proc.stdout + "\n" + push_proc.stderr)
+    verify_proc = _sh(["git", "ls-remote", remote, f"refs/heads/{branch}"], cwd=repo.path)
+    remote_sha = (verify_proc.stdout.split() or [""])[0]
+    if remote_sha != landed_sha:
+        return (f"the PR head branch {branch} did not advance to "
+                f"{landed_sha[:12]} (saw {remote_sha or '(none)'})")
+    return ""
+
+
+def _push_head_restore_note(repo: GitRepo, remote: str, branch: str, landed_sha: str,
+                             expected_head: str, default: str) -> str:
+    """Build the stderr suffix for a step-8 (default-branch push) failure.
+
+    Step 7 already force-pushed `landed_sha` onto the PR's own head branch
+    before step 8 ran — if step 8 then fails, that head-branch update is
+    stuck in place with nothing landed on `default`, and a bare retry would
+    fail forever: `land_task` re-resolves `expected_head` from the *local*
+    branch (still the old reviewed head) on every call, but the *remote*
+    head branch now carries the new, unreviewed `landed_sha`, so the retry's
+    `--force-with-lease=...:<expected_head>` would be leased against a sha
+    the remote no longer has.
+
+    So on every step-8 failure this reuses `_push_pr_head` with its two sha
+    arguments swapped — pushing `expected_head` back onto `branch`, leased
+    against the `landed_sha` that step 7 just put there — to put the head
+    branch back where it was before this run touched it. "retry" is said
+    ONLY when that restore push itself succeeds; if it also fails, the head
+    branch is left stuck at `landed_sha` and this says so plainly, since a
+    retry would just fail again with the same stale-lease error and the
+    caller needs to know manual intervention (not another `nh approve`) is
+    required."""
+    restore_err = _push_pr_head(repo, remote, branch, expected_head, landed_sha)
+    if restore_err:
+        return (
+            f" The PR head branch {branch} was already updated to "
+            f"{landed_sha[:12]}, and restoring it back to "
+            f"{expected_head[:12]} also FAILED ({restore_err}); the PR is "
+            f"left OPEN but its head branch is stuck at the unreviewed "
+            f"squash commit — fix the head branch by hand (do not just "
+            f"retry `nh approve`) before trying again.")
+    return (
+        f" The PR head branch {branch} was restored to "
+        f"{expected_head[:12]} after the push to {default} failed; the PR "
+        f"is left OPEN and nothing landed on {default}; retry.")
+
+
 def land_task(
     *,
     repo_path: Path | str,
@@ -841,7 +1100,9 @@ def land_task(
     changed_test_paths: list[str] | None = None,
     tested_commit_sha: str = "",
     remote: str = "origin",
+    head_sha: str = "",
     _before_push: Callable[[], None] | None = None,
+    _after_head_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
     """Run the whole land procedure. Never raises — every failure path
@@ -861,10 +1122,30 @@ def land_task(
     — the gate runs the FULL suite instead, since the full-suite evidence
     attached to the PR is only ever valid for the tree it actually ran on.
 
+    ``head_sha`` is the sha the caller already resolved *branch* to before
+    calling in (the head this run's review/approval actually covers — both
+    production call sites, `cli/commands.py` and `api/app.py`, resolve this
+    themselves). When non-empty, it is compared against this run's OWN
+    post-fetch resolution of *branch* (step 2); a mismatch means the branch
+    moved between the caller's resolution and this run actually starting,
+    so the run refuses at step `fetch` rather than landing (and force-
+    pushing step 7's head branch with) a sha the caller never saw reviewed.
+    When empty, this run's own post-fetch resolution of *branch* is used as
+    the step-7 lease's expected head instead — there is nothing else to
+    compare it against.
+
     ``_before_push`` is a test-only seam: a callable invoked immediately
-    before the push-time tip re-check, so a test can simulate a concurrent
-    push landing on the remote's default branch mid-run — otherwise
-    unreachable from a synchronous, single-threaded call.
+    before step 7's head-branch push, so a test can simulate a concurrent
+    push landing on the PR's head branch (or the remote's default branch)
+    mid-run — otherwise unreachable from a synchronous, single-threaded
+    call.
+
+    ``_after_head_push`` is a test-only seam: a callable invoked immediately
+    after step 7's head-branch push succeeds, but before step 8's
+    default-branch tip re-check and push — so a test can simulate a
+    concurrent push landing on the remote's default branch AFTER the PR's
+    head has already moved, to exercise the "head updated, base push failed,
+    PR left OPEN" path deterministically.
 
     ``on_step`` is an optional progress callback, invoked with one of
     :data:`STEPS` at each step boundary (so a caller can stream "merge is at
@@ -966,11 +1247,31 @@ def land_task(
     test_timeout = approve_cfg.get("test_timeout_seconds", _DEFAULT_TEST_TIMEOUT_S)
     full_test_timeout = approve_cfg.get(
         "full_test_timeout_seconds", _DEFAULT_FULL_TEST_TIMEOUT_S)
+    # Step 9's budget for `_poll_forge_merge_state` — see that function's
+    # docstring for why a single immediate read risks a premature fallback
+    # close. Configurable (like the timeouts above) so a caller with a
+    # slower forge integration can raise it; tests lower it to 0 (a single
+    # read, no sleeping) unless they're specifically exercising the poll.
+    merge_poll_timeout = approve_cfg.get(
+        "merge_poll_timeout_seconds", _MERGE_POLL_TIMEOUT_S)
 
     # -- step 2: fetch + resolve the CURRENT default-branch tip ------------ #
     _step(on_step, "fetch")
     repo.fetch(remote)
     resolved_branch = repo.resolve_commitish(branch) or resolved_branch
+    # `resolved_branch` is a REF NAME (`branch` or `origin/<branch>`), per
+    # `resolve_commitish`'s own contract — not a sha. The staleness check
+    # (and the force-with-lease expectation step 7 derives from this run)
+    # both need the actual commit the ref currently points at.
+    resolved_head_sha = repo.branch_sha(resolved_branch)
+    if head_sha and head_sha != resolved_head_sha:
+        return LandResult(
+            ok=False, step="fetch", branch=branch, pr_url=pr_url,
+            stderr=(f"branch {branch!r} has moved since this run was asked "
+                    f"to land it: expected head {head_sha[:12]}, now "
+                    f"resolves to {resolved_head_sha[:12] if resolved_head_sha else '(unresolvable)'}. "
+                    "Nothing was pushed — re-review the new head before "
+                    "retrying `nh approve`."))
     default = repo.default_branch()
     if not default:
         return LandResult(ok=False, step="fetch", branch=branch, pr_url=pr_url,
@@ -1018,7 +1319,10 @@ def land_task(
             full_test_timeout=full_test_timeout,
             pr_url=pr_url, changed_test_paths=changed_test_paths,
             tested_commit_sha=tested_commit_sha,
-            _before_push=_before_push, on_step=on_step,
+            reviewed_head_sha=head_sha or resolved_head_sha,
+            merge_poll_timeout=merge_poll_timeout,
+            _before_push=_before_push, _after_head_push=_after_head_push,
+            on_step=on_step,
         )
     finally:
         _cleanup_worktree(repo, tmp_dir)
@@ -1178,7 +1482,10 @@ def _land_in_worktree(
     task_title: str, review_evidence: str, op_name: str, op_email: str,
     test_timeout: float, full_test_timeout: float, pr_url: str,
     changed_test_paths: list[str] | None, tested_commit_sha: str = "",
+    reviewed_head_sha: str = "",
+    merge_poll_timeout: float = _MERGE_POLL_TIMEOUT_S,
     _before_push: Callable[[], None] | None = None,
+    _after_head_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
     guard = worktree_path / "scripts" / "export_guard.py"
@@ -1380,23 +1687,7 @@ def _land_in_worktree(
                                stderr=f"{gate_reason}\n" + _pytest_tail(
                                    test_proc.stdout + "\n" + test_proc.stderr))
 
-    # -- step 7: ff-merge + push, remote-ref verified ---------------------- #
-    _step(on_step, "push")
-    if _before_push is not None:
-        _before_push()
-    repo.fetch(remote)
-    check_proc = _sh(
-        ["git", "-C", str(repo.path), "rev-parse", "--verify", "--quiet",
-         f"{remote}/{default}"],
-        cwd=repo.path,
-    )
-    current_tip = check_proc.stdout.strip()
-    if current_tip and current_tip != tip_sha:
-        return LandResult(
-            ok=False, step="push", branch=branch, pr_url=pr_url, landed_sha=landed_sha,
-            stderr=f"{default} advanced from {tip_sha[:12]} to {current_tip[:12]} "
-                   "during land; retry")
-
+    # -- step 7: push the landed sha onto the PR's OWN head branch -------- #
     # Pushed from the MAIN repo, deliberately NOT the worktree: `add_worktree`
     # installs a pre-push hook there (push_hook.py) that refuses any push
     # whose resolved ref matches `never_push_to` — the agent's second
@@ -1405,6 +1696,47 @@ def _land_in_worktree(
     # such hook, so pushing from there is what makes this write reach the
     # remote at all. Both worktrees share one object database, so the sha
     # created in the worktree is already visible here.
+    _step(on_step, "push_head")
+    if _before_push is not None:
+        _before_push()
+    # `resolved_branch` is a REF NAME, not a sha (see `resolve_commitish`'s
+    # docstring) — `land_task` always passes a real sha here, but resolve one
+    # from `resolved_branch` too in case a caller (or a test) ever invokes
+    # this helper directly without it.
+    expected_head = reviewed_head_sha or repo.branch_sha(resolved_branch)
+    push_head_err = _push_pr_head(repo, remote, branch, landed_sha, expected_head)
+    if push_head_err:
+        return LandResult(
+            ok=False, step="push_head", branch=branch, pr_url=pr_url,
+            landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+            stderr=push_head_err)
+
+    if _after_head_push is not None:
+        _after_head_push()
+
+    # -- step 8: ff-merge + push the default branch, remote-ref verified -- #
+    _step(on_step, "push")
+    repo.fetch(remote)
+    check_proc = _sh(
+        ["git", "-C", str(repo.path), "rev-parse", "--verify", "--quiet",
+         f"{remote}/{default}"],
+        cwd=repo.path,
+    )
+    current_tip = check_proc.stdout.strip()
+    # From here on, step 7 has already moved the PR's head branch to
+    # `landed_sha` — ANY failure below leaves that branch update in place
+    # with nothing landed on `default`, so without the restore attempted by
+    # `_push_head_restore_note` below, the PR would stay OPEN with its head
+    # branch permanently wedged at the unreviewed squash commit, and every
+    # retry would fail with a stale lease forever (see that function's
+    # docstring).
+    if current_tip and current_tip != tip_sha:
+        return LandResult(
+            ok=False, step="push", branch=branch, pr_url=pr_url, landed_sha=landed_sha,
+            stderr=f"{default} advanced from {tip_sha[:12]} to {current_tip[:12]} "
+                   "during land." + _push_head_restore_note(
+                       repo, remote, branch, landed_sha, expected_head, default))
+
     push_proc = _sh(
         ["git", "push", remote, f"{landed_sha}:refs/heads/{default}"],
         cwd=repo.path,
@@ -1412,7 +1744,10 @@ def _land_in_worktree(
     if push_proc.returncode != 0:
         return LandResult(ok=False, step="push", branch=branch, pr_url=pr_url,
                            landed_sha=landed_sha,
-                           stderr=_cap(push_proc.stdout + "\n" + push_proc.stderr))
+                           stderr=_cap(push_proc.stdout + "\n" + push_proc.stderr)
+                                  + _push_head_restore_note(
+                                      repo, remote, branch, landed_sha, expected_head,
+                                      default))
 
     ls_proc = _sh(["git", "ls-remote", remote, f"refs/heads/{default}"], cwd=repo.path)
     remote_sha = (ls_proc.stdout.split() or [""])[0]
@@ -1420,15 +1755,26 @@ def _land_in_worktree(
         return LandResult(
             ok=False, step="push", branch=branch, pr_url=pr_url, landed_sha=landed_sha,
             stderr=f"remote ref did not advance to {landed_sha} "
-                   f"(saw {remote_sha or '(none)'})")
+                   f"(saw {remote_sha or '(none)'})" + _push_head_restore_note(
+                       repo, remote, branch, landed_sha, expected_head, default))
 
-    # -- step 8: close the PR, without a comment ---------------------------#
+    # -- step 9: forge-merged check; close only as a non-fatal fallback --- #
     _step(on_step, "close_pr")
     close_cwd = repo.path if repo.path.exists() else Path(tempfile.gettempdir())
-    close_note = _close_pr(pr_url, close_cwd)
+    state, note = _poll_forge_merge_state(pr_url, close_cwd, timeout=merge_poll_timeout)
     msg = f"landed {landed_sha[:12]} onto {default}; gate: {gate_reason}"
-    if close_note:
-        msg += f"; {close_note}"
+    warning = ""
+    if state == "MERGED":
+        msg += "; PR reported MERGED by the forge"
+    else:
+        close_note = _close_pr(pr_url, close_cwd)
+        warning = (
+            "the forge did not report this PR merged "
+            f"({note or state or 'state unknown'}) — closed it as a "
+            f"fallback; the code IS on {default}")
+        if close_note:
+            warning += f"; {close_note}"
+        msg += f"; WARNING: {warning}"
     return LandResult(ok=True, step="close_pr", branch=branch, pr_url=pr_url,
                       reconciled=reconciled_note, gate=gate, gate_reason=gate_reason,
-                       landed_sha=landed_sha, message=msg)
+                       landed_sha=landed_sha, message=msg, warning=warning)

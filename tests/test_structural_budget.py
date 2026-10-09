@@ -499,6 +499,20 @@ FROZEN_FUNCTION_LINES = {
     # which is why it went unnoticed. Measured on this tree with the scanner
     # below.
     "review/reviewer.py:_build_review_prompt": 347,
+    # 2026-10-09, "nh approve lands a PR as closed, not merged" send-back
+    # round: 283 -> 302 (+19). Two blocking review fixes landed in this one
+    # function. (1) A step-8 (default-branch push) failure after step 7
+    # (head-branch push) already succeeded used to leave the PR's head
+    # branch stuck at the unreviewed squash sha with no way to retry --
+    # every failure path now calls `_push_head_restore_note`, which attempts
+    # to push the head branch back to `expected_head` and only says "retry"
+    # when that restore itself succeeds. (2) The forge-merged check used to
+    # read `_forge_merge_state` exactly once right after the base push, but
+    # GitHub settles on MERGED asynchronously (~1s observed lag on PR #652)
+    # -- it now polls via `_poll_forge_merge_state` for up to
+    # `merge_poll_timeout_seconds` before falling back to a close. Measured
+    # on this tree with the scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 302,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -1732,7 +1746,12 @@ FROZEN_FILE_LINES = {
     # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
     # mergeability as its own not-landable category (summary line and the
     # --yes skip message) instead of counting it as landable.
-    "cli/commands.py": 9267,
+    # 9267 -> 9269 (+2): thread `head_sha=` into the `land_task(...)` call so
+    # a landing refuses to lease against a head nobody reviewed, plus one new
+    # `result.warning` print when the forge-merged check falls back to a
+    # bare close ("nh approve lands a PR as closed, not merged"). Measured on
+    # this tree with the scanner below.
+    "cli/commands.py": 9269,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1925,7 +1944,11 @@ FROZEN_FILE_LINES = {
     # and threading `registration_status` into the persisted onboarding
     # state and the response body. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6366,
+    # 6366 -> 6367 (+1): thread `head_sha=` into the `land_task(...)` call in
+    # `_merge_task_pr` from the head `_review_pass_evidence` already
+    # resolved, same reason as `cli/commands.py` above ("nh approve lands a
+    # PR as closed, not merged"). Measured on this tree.
+    "api/app.py": 6367,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2286,7 +2309,17 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 2769 (+6): comment-only accuracy fix at the CLOSED rung in
+    # `_check_open_pr` -- new landings now report MERGED (rung 1 completes
+    # them) so the old "GitHub's merged flag is never true for our PRs"
+    # claim no longer holds; no logic change ("nh approve lands a PR as
+    # closed, not merged"). Measured on this tree.
+    # 2769 -> 2770 (+1): the same comment, reworded again -- "2026-10-09 PR
+    # #652 fix" overstated what #652 itself did (it proved the MERGED-vs-
+    # CLOSED mechanism empirically; the module fix that acts on it landed
+    # separately, in this same ticket). Comment-only; no logic change.
+    # Measured on this tree.
+    "blockers/wake.py": 2770,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
