@@ -14,6 +14,17 @@ All notable changes to no_human. The format follows
   criterion would fabricate a spec no human approved), but a WARNING now
   names the task so the UNGRADABLE state is visible, matching the posture
   issue #511 established for the issue-URL intake path.
+- **An already-satisfied review PASS now stamps the commit it judged onto the
+  attempt row**, not just onto `review_history`. Previously the attempt row
+  was left with `review_passed=1, commit_sha=NULL`, so consumers keyed on
+  the attempts table (the no-changes landing path, and the
+  `tested_commit_sha` that `nh approve` passes to the merge) saw no reviewed
+  commit. An unresolvable head still stamps nothing, so the merge gate keeps
+  refusing it in that case. This covers every review-only PASS that reaches
+  the already-satisfied path, including a recovery round woken after a
+  TRANSIENT_INFRA park; a resumed head carrying an unjudged diff is routed
+  by `_route_unjudged_head` through the normal commit path, which already
+  stamped `commit_sha` (unchanged).
 
 ## [0.2.4] - 2026-09-17
 
