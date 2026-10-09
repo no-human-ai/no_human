@@ -174,8 +174,13 @@ named here.
   Until 2026-08-08 this sentence overstated: the guard denied the direct
   spellings but not this wrapper.
 - **`nh approve` lands the PR** — a local squash commit made as the operator
-  identity, then `git push` of that commit to your default branch and a
-  `gh pr close` / `glab mr close` of the PR (`vcs/approve_merge.py`). This is
+  identity, then `git push` of that commit first onto the PR's own head
+  branch and then onto your default branch, followed by a read-only poll of
+  the PR's merge state via the forge CLI (`vcs/approve_merge.py`). Operator
+  hard rule (2026-10-09): a PR whose code lands must end MERGED on GitHub,
+  never CLOSED — this step never calls `gh pr close` / `glab mr close`; when
+  the forge does not report MERGED within the poll budget, `land_task` still
+  returns success with a warning naming the state seen. This is
   **your** command (CLI `nh approve` or `no-human approve` — the same entry
   point under both console scripts — or the board's "Approve and merge"
   button).
@@ -259,7 +264,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5659`, `:merge_stack_run:3178`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5661`, `:merge_stack_run:3178`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses

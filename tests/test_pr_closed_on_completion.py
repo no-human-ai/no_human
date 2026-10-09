@@ -286,10 +286,11 @@ async def test_other_tasks_pr_is_never_touched(tmp_path, store, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# control: the merge path's existing close behavior is unchanged              #
+# control: the merge path never closes a landed PR (operator hard rule,       #
+# 2026-10-09) — it must also still skip the completion closeout hook #
 # --------------------------------------------------------------------------- #
 
-def test_merge_path_close_behavior_unchanged(land_env, monkeypatch):
+def test_merge_path_never_closes_the_pr(land_env, monkeypatch):
     import json
 
     import no_human.blockers.pr_closeout as pr_closeout_mod
@@ -312,12 +313,13 @@ def test_merge_path_close_behavior_unchanged(land_env, monkeypatch):
     assert result.ok, result.stderr
     assert called == [], (
         "the merge path must not invoke the completion closeout hook — its "
-        "own _close_pr step is the control surface and stays as-is")
+        "own step-9 forge-poll is the control surface and stays as-is")
 
     argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines()
             if l.strip()]
     close_calls = [a for a in argvs if a[:2] == ["pr", "close"]]
-    assert len(close_calls) == 1, f"merge path must close exactly once: {argvs}"
+    assert close_calls == [], (
+        f"land_task must never close a landed PR (operator hard rule): {argvs}")
     for a in argvs:
         assert "--comment" not in a
         assert a[:2] != ["pr", "comment"]

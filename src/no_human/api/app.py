@@ -1916,6 +1916,7 @@ async def _merge_task_pr(
         repo_path=task.repo_path, branch=branch, pr_url=pr_url,
         task_id=task.id, task_title=task.title, review_evidence=evidence,
         config=config.data, on_step=on_step, tested_commit_sha=tested,
+        head_sha=head_sha,
     )
     if result.skipped:
         return "", None

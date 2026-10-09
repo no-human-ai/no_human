@@ -275,7 +275,7 @@ def test_ready_yes_lands_in_discovery_order(tmp_path, monkeypatch):
 
     def _fake(*, task_id, **kwargs):
         seen_order.append(task_id)
-        return LandResult(ok=True, step="close_pr",
+        return LandResult(ok=True, step="forge_state",
                            landed_sha="ab" * 20, message="landed by fake")
 
     monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
@@ -508,7 +508,7 @@ def test_conflicted_task_is_visible_and_not_auto_resolved(tmp_path, monkeypatch)
 
     def _fake(*, task_id, **kwargs):
         calls.append(task_id)
-        return LandResult(ok=True, step="close_pr",
+        return LandResult(ok=True, step="forge_state",
                            landed_sha="ab" * 20, message="landed by fake")
 
     monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
@@ -582,7 +582,7 @@ def test_unknown_base_is_not_landed(tmp_path, monkeypatch):
 
     def _fake(*, task_id, **kwargs):
         calls.append(task_id)
-        return LandResult(ok=True, step="close_pr",
+        return LandResult(ok=True, step="forge_state",
                            landed_sha="cd" * 20, message="landed by fake")
 
     monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
@@ -781,7 +781,7 @@ def test_ready_yes_never_lands_a_superseded_task(tmp_path, monkeypatch):
 
     def _fake(*, task_id, **kwargs):
         calls.append(task_id)
-        return LandResult(ok=True, step="close_pr",
+        return LandResult(ok=True, step="forge_state",
                            landed_sha="ab" * 20, message="landed by fake")
 
     monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
@@ -824,7 +824,7 @@ def test_ready_yes_still_lands_an_unrelated_task_alongside_a_superseded_one(tmp_
 
     def _fake(*, task_id, **kwargs):
         calls.append(task_id)
-        return LandResult(ok=True, step="close_pr",
+        return LandResult(ok=True, step="forge_state",
                            landed_sha="ab" * 20, message="landed by fake")
 
     monkeypatch.setattr(approve_merge_mod, "land_task", _fake)

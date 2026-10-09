@@ -499,6 +499,43 @@ FROZEN_FUNCTION_LINES = {
     # which is why it went unnoticed. Measured on this tree with the scanner
     # below.
     "review/reviewer.py:_build_review_prompt": 347,
+    # 2026-10-09, "nh approve lands a PR as closed, not merged" send-back
+    # round: 260 (cc 35) -> 302 (cc 41), measured against this repo's main.
+    # Two blocking review fixes landed in this one function. (1) A step-8
+    # (default-branch push) failure after step 7
+    # (head-branch push) already succeeded used to leave the PR's head
+    # branch stuck at the unreviewed squash sha with no way to retry --
+    # every failure path now calls `_push_head_restore_note`, which attempts
+    # to push the head branch back to `expected_head` and only says "retry"
+    # when that restore itself succeeds. (2) The forge-merged check used to
+    # read `_forge_merge_state` exactly once right after the base push, but
+    # GitHub settles on MERGED asynchronously (~1s observed lag on PR #652)
+    # -- it now polls via `_poll_forge_merge_state` for up to
+    # `merge_poll_timeout_seconds` before falling back to a close.
+    # 302 -> 311 (+9), same PR, "nh approve must never close a landed PR"
+    # follow-up: the (2) fallback above was itself an operator-rule
+    # violation -- a landed PR must end MERGED, never CLOSED. Step 9 no
+    # longer closes anything when the poll budget is exhausted; it now
+    # branches on the forge-reported state (MERGED / CLOSED / neither) and
+    # returns `ok=True` with a non-fatal warning naming the state and the
+    # landed sha in every non-MERGED case, which is what grew the function.
+    # `_coerce_poll_timeout` (the `merge_poll_timeout_seconds` None/
+    # non-numeric/negative guard) lives in `land_task`, not in this
+    # function, so it isn't part of this delta. Cyclomatic complexity is
+    # unchanged at 41 (still under the 60 function-cc ceiling, so no
+    # `FROZEN_FUNCTION_CC` entry is needed). Net across both rounds, measured
+    # against this repo's main: 260 (cc 35) -> 311 (cc 41).
+    # 311 -> 316 (+5), same follow-up, send-back round 2: step 9's `else`
+    # branch (forge state unknown/neither MERGED nor CLOSED) grew a 5-line
+    # comment plus a `left_as` branch so the warning says what the forge
+    # actually reported (e.g. "left OPEN") instead of assuming OPEN when the
+    # state could not be determined at all; step 7's call site also started
+    # threading the already-in-scope `default` parameter through to
+    # `_push_pr_head` (same line count). Complexity moved from estimated 41
+    # to estimated 42, still well under the 60 function-cc ceiling, so no
+    # `FROZEN_FUNCTION_CC` entry is needed. Measured on this tree with the
+    # scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 316,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -1744,11 +1781,15 @@ FROZEN_FILE_LINES = {
     # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
     # mergeability as its own not-landable category (summary line and the
     # --yes skip message) instead of counting it as landable.
-    # 9267 -> 9269 (+2): #651 calls `close_draft_pr_on_cancel` from both
+    # 9267 -> 9269 (+2): thread `head_sha=` into the `land_task(...)` call so
+    # a landing refuses to lease against a head nobody reviewed, plus one new
+    # `result.warning` print for the forge-merge-state outcome. Measured on
+    # this tree with the scanner below.
+    # 9269 -> 9271 (+2): #651 calls `close_draft_pr_on_cancel` from both
     # `nh task cancel` branches (the cancel and the failed-task re-label), so
     # a cancelled task's outstanding draft PR is retitled and closed.
     # Measured on this tree with the scanner below.
-    "cli/commands.py": 9269,
+    "cli/commands.py": 9271,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1941,16 +1982,20 @@ FROZEN_FILE_LINES = {
     # and threading `registration_status` into the persisted onboarding
     # state and the response body. Measured on this tree with the scanner
     # below.
-    # 6366 -> 6378 (+12): #651 schedules `close_draft_pr_on_cancel` as a
+    # 6366 -> 6367 (+1): thread `head_sha=` into the `land_task(...)` call in
+    # `_merge_task_pr` from the head `_review_pass_evidence` already
+    # resolved, so a landing refuses to lease against a head nobody
+    # reviewed. Measured on this tree.
+    # 6367 -> 6379 (+12): #651 schedules `close_draft_pr_on_cancel` as a
     # background task on the cancel and split endpoints (after the response
     # and broadcast, so neither waits on the forge), plus the
     # `BackgroundTasks` parameter and import. Measured on this tree with the
     # scanner below.
-    # 6378 -> 6383 (+5, #222): the worker-status `healthy`
+    # 6379 -> 6384 (+5, #222): the worker-status `healthy`
     # flag now also drops when a per-tick lease refresh is currently failing
     # (`lease_refresh_failed`), not only when the lease is terminally lost.
     # Measured on this tree with the scanner below.
-    "api/app.py": 6383,
+    "api/app.py": 6384,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2311,12 +2356,29 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    # 2763 -> 2783 (+20, #429): `_CI_INFRA_RE` gained the runner-acquisition
+    # 2763 -> 2769 (+6): comment-only accuracy fix at the CLOSED rung in
+    # `_check_open_pr` -- new landings now report MERGED (rung 1 completes
+    # them) so the old "GitHub's merged flag is never true for our PRs"
+    # claim no longer holds; no logic change ("nh approve lands a PR as
+    # closed, not merged"). Measured on this tree.
+    # 2769 -> 2770 (+1): the same comment, reworded again -- "2026-10-09 PR
+    # #652 fix" overstated what #652 itself did (it proved the MERGED-vs-
+    # CLOSED mechanism empirically; the module fix that acts on it landed
+    # separately, in this same ticket). Comment-only; no logic change.
+    # Measured on this tree.
+    # 2770 -> 2773 (+3), same ticket, "nh approve must never close a landed
+    # PR" follow-up: the same comment was wrong again -- it still blamed a
+    # "legacy `_close_pr` fallback path" for the CLOSED-but-content-landed
+    # population, but `land_task` no longer closes a PR as a fallback.
+    # Reworded to say only what the code does: a CLOSED state seen here
+    # always predates this watcher's poll. Comment-only; no logic change.
+    # Measured on this tree.
+    # 2773 -> 2793 (+20, #429): `_CI_INFRA_RE` gained the runner-acquisition
     # outage sentence, anchored to the start of a line (re.M); the infra
     # classifier scans EVERY failing check instead of failing[0]; and the
     # send-back and escalation evidence use the link of the job whose log they
     # show. Measured on this tree with the scanner below.
-    "blockers/wake.py": 2783,
+    "blockers/wake.py": 2793,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
