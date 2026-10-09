@@ -500,8 +500,9 @@ FROZEN_FUNCTION_LINES = {
     # below.
     "review/reviewer.py:_build_review_prompt": 347,
     # 2026-10-09, "nh approve lands a PR as closed, not merged" send-back
-    # round: 283 -> 302 (+19). Two blocking review fixes landed in this one
-    # function. (1) A step-8 (default-branch push) failure after step 7
+    # round: 260 (cc 35) -> 302 (cc 41), measured against this repo's main.
+    # Two blocking review fixes landed in this one function. (1) A step-8
+    # (default-branch push) failure after step 7
     # (head-branch push) already succeeded used to leave the PR's head
     # branch stuck at the unreviewed squash sha with no way to retry --
     # every failure path now calls `_push_head_restore_note`, which attempts
@@ -522,8 +523,9 @@ FROZEN_FUNCTION_LINES = {
     # non-numeric/negative guard) lives in `land_task`, not in this
     # function, so it isn't part of this delta. Cyclomatic complexity is
     # unchanged at 41 (still under the 60 function-cc ceiling, so no
-    # `FROZEN_FUNCTION_CC` entry is needed). Measured on this tree with the
-    # scanner below.
+    # `FROZEN_FUNCTION_CC` entry is needed). Net across both rounds, measured
+    # against this repo's main: 260 (cc 35) -> 311 (cc 41). Measured on this
+    # tree with the scanner below.
     "vcs/approve_merge.py:_land_in_worktree": 311,
 }
 
