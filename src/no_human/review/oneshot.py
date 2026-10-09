@@ -44,8 +44,10 @@ straight off disk at whatever path it is given) always reads the exact tree
 that was diffed — never the user's live, possibly-dirty working tree. That
 clone is read-only against the user's repo — `--local --shared` only ever
 reads objects there — and every write it makes (the clone itself, the
-detached checkout inside it) lands solely in the temp directory. The
-reviewer's own backend is constructed read-only via `AdversarialReviewer`/
+detached checkout inside it, and one more `fetch` of `after_ref` by object
+id, sourced from the user's checkout, needed when it is a shallow repo — see
+`_materialized_head`) lands solely in the temp directory. The reviewer's own
+backend is constructed read-only via `AdversarialReviewer`/
 `ClaudeBackend(readonly=True)`.
 """
 
@@ -104,6 +106,14 @@ _PR_URL_RE = re.compile(
 _ORIGIN_URL_RE = re.compile(
     r"(?:^|[/@])github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
+
+# A full object id as `git rev-parse` prints it: 40 hex for a SHA-1 repo, 64
+# for a SHA-256 one. `_materialized_head` passes its `sha` as a bare argv
+# element to `git fetch` and `git checkout`, where a value starting with `-`
+# would parse as an option and anything else (`a:b`, `+x`, a branch name)
+# as a refspec or ref — so it refuses anything but a full id before running
+# either.
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 class GateUnavailable(RuntimeError):
@@ -472,6 +482,10 @@ def _materialized_head(repo_path: Path, sha: str):
     always reads the exact tree that was diffed. The clone is removed on the
     way out, success or failure.
     """
+    if not _FULL_SHA_RE.fullmatch(sha):
+        raise GateUnavailable(
+            f"refusing to materialize {sha!r} for review: not a full commit id"
+        )
     tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_"))
     try:
         clone = subprocess.run(
@@ -483,6 +497,34 @@ def _materialized_head(repo_path: Path, sha: str):
             raise GateUnavailable(
                 "could not materialize the reviewed commit for review: "
                 f"{clone.stderr.strip()}"
+            )
+        # `--shared`'s alternates normally give this clone raw filesystem
+        # access to every object in `repo_path`'s object store, reachable or
+        # not. But when `repo_path` is a shallow repository, git silently
+        # downgrades `clone --local --shared` to an ordinary ref-walking
+        # transfer (git itself warns "source repository is shallow, ignoring
+        # --local"), which only copies objects reachable from a ref. PR
+        # mode's `fetch` deliberately leaves the PR head reachable only via
+        # `FETCH_HEAD` — never a branch (see module docstring) — so on a
+        # shallow `repo_path` that ref-walking transfer silently drops it,
+        # and `sha` is then missing at checkout ("unable to read tree"),
+        # which is exactly what happens reviewing a fork PR from a shallow
+        # checkout. Fetching `sha` again, by object id, straight from
+        # `repo_path` into this throwaway clone closes the gap the same way
+        # regardless of `repo_path`'s shape: the write lands only in
+        # `tmp_dir` (removed on the way out either way), never in
+        # `repo_path` — no ref there is read, created, or moved by this
+        # call, it is only ever a fetch *source*. When `sha` is already
+        # present (every non-shallow `repo_path`, and branch mode, where the
+        # initial clone already carried it) this is a fast no-op.
+        refetch = subprocess.run(
+            ["git", "fetch", "-q", str(repo_path), sha],
+            cwd=tmp_dir, capture_output=True, text=True, env=_no_prompt_env(),
+        )
+        if refetch.returncode != 0:
+            raise GateUnavailable(
+                f"could not fetch commit {sha} for review: "
+                f"{refetch.stderr.strip()}"
             )
         checkout = subprocess.run(
             ["git", "checkout", "--detach", "-q", sha],

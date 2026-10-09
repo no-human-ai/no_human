@@ -916,13 +916,18 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     "review/oneshot.py": {
         "exec:git fetch": Allowed(
             "your git remote — `git fetch origin refs/pull/<n>/head` at "
-            ":389, to compare a PR's head against its merge base",
-            "user-invoked: only when `nh gate --pr <url>` is given a pull "
-            "request URL; the default `nh gate` (current branch) never "
-            "reaches this path"),
+            ":404, to compare a PR's head against its merge base; the "
+            "second call, `git fetch -q <repo_path> <sha>` at :521, names no "
+            "remote — its source is the user's own checkout and it writes "
+            "only into `_materialized_head`'s throwaway clone",
+            "user-invoked: the remote fetch runs only when `nh gate --pr "
+            "<url>` is given a pull request URL; the default `nh gate` "
+            "(current branch) never reaches it. The local by-object-id "
+            "fetch runs on every `nh gate` invocation, inside the temp "
+            "clone"),
         "exec:git clone": Allowed(
             "no remote at all — `git clone --local --shared --no-checkout` "
-            "at :473 clones the user's own repo (whatever ref it is on) "
+            "at :492 clones the user's own repo (whatever ref it is on) "
             "into a throwaway temp directory so the reviewed head can be "
             "checked out for citation verification against the exact "
             "reviewed tree, never the user's live working tree; `--local` "
