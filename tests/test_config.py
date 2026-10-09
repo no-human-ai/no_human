@@ -520,7 +520,6 @@ def test_the_config_floor_never_inverts_the_retry_window():
 _BASELINE_SIZE_AT_WRITING = 71
 
 _UNDOCUMENTED_AT_BASELINE = frozenset({
-    "blockers.ignore_comment_authors",
     "blockers.max_ci_fix_rounds",
     "blockers.max_ci_gate_fix_rounds",
     "blockers.pr_ci_policy",

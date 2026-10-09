@@ -2175,7 +2175,11 @@ FROZEN_FILE_LINES = {
     # synthetic) with their explanatory comments — config defaults live in
     # DEFAULT_CONFIG, not in the module that reads them. Measured on this
     # tree with the scanner below.
-    "config.py": 3718,
+    # 3718 -> 3726 (+8): `blockers.allow_comment_bot_authors` default plus
+    # its explanatory comment -- the opt-in that lets a named bot's
+    # comments/reviews count as human feedback despite `user.type ==
+    # "Bot"`. Measured on this tree with the scanner below.
+    "config.py": 3726,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -2331,7 +2335,12 @@ FROZEN_FILE_LINES = {
     # classifier scans EVERY failing check instead of failing[0]; and the
     # send-back and escalation evidence use the link of the job whose log they
     # show. Measured on this tree with the scanner below.
-    "blockers/wake.py": 2783,
+    # 2783 -> 2822 (+39): `allow_comment_bot_authors` config read
+    # plus the new `_is_bot_comment` helper (and its precedence docstring)
+    # that treats `author_type == "Bot"` as a bot regardless of login
+    # suffix, with the allow-list as an opt-in escape; `_is_self_or_bot`
+    # now routes through it. Measured on this tree with the scanner below.
+    "blockers/wake.py": 2822,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
