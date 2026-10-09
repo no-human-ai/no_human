@@ -206,12 +206,17 @@ function windowsSigningPlan(env = {}) {
   if (present(env, WINDOWS_CERTIFICATE_VAR)) {
     return {
       signed: true,
+      // Windows has only two states: a certificate is present or it is not.
+      // Notarization is an Apple concept — SIGNED_NOT_NOTARIZED can never be
+      // the Windows verdict.
+      mode: SIGNED,
       artifactTag: "",
       reason: `a Windows certificate is set in ${WINDOWS_CERTIFICATE_VAR}`,
     };
   }
   return {
     signed: false,
+    mode: UNSIGNED,
     artifactTag: "-UNSIGNED",
     reason: `no ${WINDOWS_CERTIFICATE_VAR} — this Windows build is UNSIGNED.`
       + " SmartScreen will warn on it and auto-update is not offered.",
@@ -370,6 +375,88 @@ function assertStampMatchesPlatform(electronPlatformName, canAutoUpdate) {
   }
 }
 
+/**
+ * Ordering used only to pick the WEAKEST (most honest) mode across a set of
+ * platforms — never to compare across unrelated dimensions. Under-claiming
+ * is the fail-safe direction (see windowsSigningPlan's doc comment); a name
+ * that under-claims can be corrected, one that over-claims ships.
+ */
+const MODE_RANK = { [UNSIGNED]: 0, [SIGNED_NOT_NOTARIZED]: 1, [SIGNED]: 2 };
+
+/**
+ * What signing mode a SINGLE platform actually got, independent of any other
+ * platform this invocation might also target. `nhSigning` (below) is built
+ * from this per-platform truth, exactly as `nhCanAutoUpdate` is built from
+ * `autoUpdateStamp` rather than the bare macOS `plan.canAutoUpdate` — see
+ * this file's header for why the plan alone is not enough.
+ *
+ *   darwin — the macOS plan's mode (identity + notarization).
+ *   win32  — the Windows plan's mode (a Windows certificate only).
+ *   linux  — always UNSIGNED: this repo has no Linux signing at all — no
+ *            certificate variable, no target option — so the honest answer
+ *            is unsigned, not "unknown" (main.mjs's packagedSigning() would
+ *            coerce anything falsy to "unsigned" anyway).
+ *   anything else — UNSIGNED, fail closed for an unrecognised platform.
+ */
+function platformSigningMode(platform, { plan, winPlan }) {
+  if (platform === "darwin") return plan.mode;
+  if (platform === "win32") return winPlan.mode;
+  return UNSIGNED;
+}
+
+/**
+ * The ONE `nhSigning` value stamped into the packaged app for THIS
+ * invocation's platform set — never the bare macOS `plan.mode`, which says
+ * nothing about what a Windows or Linux artifact in the same invocation
+ * actually got.
+ *
+ *   mode   — the WEAKEST per-platform mode across every platform targeted.
+ *            A mac-only invocation stamps the macOS plan's mode unchanged;
+ *            a win/linux-only invocation never claims macOS signing or
+ *            notarization; a mixed invocation under-claims rather than
+ *            over-claims (the same fail-safe direction as
+ *            windowsSigningPlan, and there is no fatal exit here — that
+ *            already exists in `autoUpdateStamp` for the dangerous
+ *            signed+notarized-mac-mixed-with-non-mac shape).
+ *   mixed  — true when the targeted platforms disagree on their own mode.
+ *   reason — one line naming the platform set, each platform's own mode,
+ *            and the chosen value.
+ */
+function signingStamp({ plan, winPlan, platforms }) {
+  if (platforms.size === 0) {
+    return {
+      mode: UNSIGNED,
+      mixed: false,
+      reason: "nhSigning=unsigned: no recognised target platform — failing closed",
+    };
+  }
+  const sorted = [...platforms].sort();
+  const modes = sorted.map((p) => platformSigningMode(p, { plan, winPlan }));
+  const mixed = new Set(modes).size > 1;
+  const weakest = modes.reduce((a, b) => (MODE_RANK[b] < MODE_RANK[a] ? b : a));
+  const perPlatform = sorted.map((p, i) => `${p}=${modes[i]}`).join(", ");
+  const reason = `nhSigning=${weakest}: targeting {${sorted.join(", ")}} (${perPlatform})`
+    + (mixed ? " — mixed modes across targets, stamping the weakest" : "");
+  return { mode: weakest, mixed, reason };
+}
+
+/**
+ * Fail-closed runtime backstop for any invocation shape {@link buildPlatforms}
+ * could not see (the electron-builder Node API, a future flag alias), the
+ * same role {@link assertStampMatchesPlatform} plays for `nhCanAutoUpdate`:
+ * throws when the stamped mode claims MORE than the real platform actually
+ * got.
+ */
+function assertSigningStampMatchesPlatform(electronPlatformName, stampedMode, { plan, winPlan }) {
+  const actual = platformSigningMode(electronPlatformName, { plan, winPlan });
+  if (MODE_RANK[stampedMode] > MODE_RANK[actual]) {
+    throw new Error(
+      `assertSigningStampMatchesPlatform: refusing to pack ${electronPlatformName} with `
+      + `nhSigning=${stampedMode} — that platform's own signing mode is ${actual}.`,
+    );
+  }
+}
+
 module.exports = {
   SIGNED,
   SIGNED_NOT_NOTARIZED,
@@ -385,4 +472,7 @@ module.exports = {
   buildPlatforms,
   autoUpdateStamp,
   assertStampMatchesPlatform,
+  platformSigningMode,
+  signingStamp,
+  assertSigningStampMatchesPlatform,
 };

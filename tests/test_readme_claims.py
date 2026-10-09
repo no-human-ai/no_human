@@ -2058,7 +2058,7 @@ CITATION_TABLE = (
      "autoUpdater.checkForUpdates()"),
     ("security.md", "desktop/main.mjs:gotLock:1141", "desktop/main.mjs",
      "checkForUpdates().catch"),
-    ("security.md", "desktop/electron-builder.config.cjs:module.exports:457",
+    ("security.md", "desktop/electron-builder.config.cjs:module.exports:472",
      "desktop/electron-builder.config.cjs", '"github"'),
     ("security.md", "desktop/updater.mjs:configure:68", "desktop/updater.mjs",
      "autoDownload = false"),

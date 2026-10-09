@@ -337,7 +337,7 @@ named here.
 - **The desktop app checks GitHub Releases at startup**, once a day
   (`desktop/main.mjs:checkForUpdates:270` → `desktop/updater.mjs:check:116`, called at startup from
   `desktop/main.mjs:gotLock:1141`, feed `provider: github, owner: no-human-ai, repo:
-  no_human` — `desktop/electron-builder.config.cjs:module.exports:457`). It never downloads on its own
+  no_human` — `desktop/electron-builder.config.cjs:module.exports:472`). It never downloads on its own
   (`autoDownload` is off, `desktop/updater.mjs:configure:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
   `updates.enabled` exists in `desktop/` — those switches do not reach it.**

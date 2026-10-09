@@ -33,7 +33,11 @@
 // (signing.cjs) takes the macOS signing plan AND the platform(s) THIS
 // invocation actually targets — a credentialed environment does not make a
 // Windows or Linux artifact's update path any less unverified. See
-// signing.cjs's header for the full argument.
+// signing.cjs's header for the full argument. `nhSigning` has the same
+// disease and the same cure: it is computed by `signingStamp` from the SAME
+// platform set, not the bare macOS `plan.mode`, so a Windows or Linux build
+// run in a credentialed Apple shell cannot claim macOS signing/notarization
+// it never received.
 //
 // The `mac.target` list is not cosmetic: Squirrel.Mac updates from a ZIP, and
 // electron-builder only emits `latest-mac.yml` — the file electron-updater
@@ -60,6 +64,7 @@ const path = require("path");
 const {
   signingBanner, signingPlan, windowsSigningBanner, windowsSigningPlan,
   buildPlatforms, autoUpdateStamp, assertStampMatchesPlatform,
+  signingStamp, assertSigningStampMatchesPlatform,
 } = require("./signing.cjs");
 // The Electron/Chromium licence-notice guard lives in its own module: this
 // file must export the config object and NOTHING else, or electron-builder's
@@ -74,6 +79,12 @@ const winPlan = windowsSigningPlan(process.env);
 // platform set, read from argv, is also required.
 const platforms = buildPlatforms(process.argv, process.platform);
 const stamp = autoUpdateStamp({ plan, platforms });
+// Same disease as nhCanAutoUpdate, same cure: `nhSigning` cannot be the bare
+// macOS `plan.mode` either, or a Windows/Linux artifact built in a
+// credentialed Apple shell would claim macOS signing/notarization it never
+// received. `signingStamp` reuses the SAME `platforms` set computed above —
+// not a second read of argv — and takes the weakest per-platform mode.
+const signing = signingStamp({ plan, winPlan, platforms });
 
 // Printed on EVERY build, signed or not. The failure mode the operator named is
 // a green build that silently produced something Gatekeeper rejects; this is
@@ -81,6 +92,7 @@ const stamp = autoUpdateStamp({ plan, platforms });
 console.log(signingBanner(plan));
 console.log(windowsSigningBanner(winPlan));
 console.log(stamp.reason);
+console.log(signing.reason);
 
 if (plan.fatal) {
   // A release build that cannot be a release must not produce an artifact at
@@ -390,11 +402,12 @@ module.exports = {
   ],
   // Read at runtime by main.mjs (packagedSigning) and never from the live
   // environment, so a user cannot enable the update path by exporting a var.
-  // nhCanAutoUpdate comes from `stamp`, not `plan.canAutoUpdate` directly —
-  // see the header and signing.cjs: the macOS verdict alone is not enough,
-  // because a single invocation can also emit a non-mac target.
+  // Neither value below comes from the bare macOS `plan` directly — see the
+  // header and signing.cjs: the macOS verdict alone is not enough, because a
+  // single invocation can also emit a non-mac target. nhSigning comes from
+  // `signing` (signingStamp), nhCanAutoUpdate from `stamp` (autoUpdateStamp).
   extraMetadata: {
-    nhSigning: plan.mode,
+    nhSigning: signing.mode,
     nhCanAutoUpdate: stamp.canAutoUpdate,
     // The hosted onboarding-intake URL, stamped ONLY when the build environment
     // carries NH_ONBOARDING_REGISTER_URL: the CI release jobs pass it from the
@@ -441,13 +454,15 @@ module.exports = {
   // injecting into Contents/, and Windows has no equivalent seal to break. An
   // unsigned .exe here is simply unsigned, not "damaged".
   //
-  // assertStampMatchesPlatform runs FIRST and against the REAL
-  // electronPlatformName electron-builder hands beforePack per platform: it is
-  // the fail-closed backstop for any invocation shape buildPlatforms could not
-  // see from argv (the Node API, a future flag alias) — cheaper than the
-  // notices check, and it is the actual gate this ticket is about.
+  // assertStampMatchesPlatform and assertSigningStampMatchesPlatform run
+  // FIRST, against the REAL electronPlatformName electron-builder hands
+  // beforePack per platform: they are the fail-closed backstops for any
+  // invocation shape buildPlatforms could not see from argv (the Node API, a
+  // future flag alias) — cheaper than the notices check, and together they
+  // are the actual gate this ticket is about.
   beforePack: async (context) => {
     assertStampMatchesPlatform(context.electronPlatformName, stamp.canAutoUpdate);
+    assertSigningStampMatchesPlatform(context.electronPlatformName, signing.mode, { plan, winPlan });
     await assertElectronNoticesPresent();
   },
   afterPack: adhocSeal,
