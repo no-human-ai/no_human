@@ -299,7 +299,7 @@ def test_task_branch_only_claim_is_landed_by_approve(tmp_path, monkeypatch, bare
         landed = subprocess.run(
             ["git", "-C", repo_path, "rev-parse", branch],
             check=True, capture_output=True, text=True).stdout.strip()
-        return LandResult(ok=True, step="close_pr", landed_sha=landed,
+        return LandResult(ok=True, step="forge_state", landed_sha=landed,
                           pr_url=pr_url, branch=branch, message="landed onto main")
 
     import no_human.vcs.approve_merge as approve_merge_mod

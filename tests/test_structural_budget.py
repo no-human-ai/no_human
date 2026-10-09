@@ -524,9 +524,18 @@ FROZEN_FUNCTION_LINES = {
     # function, so it isn't part of this delta. Cyclomatic complexity is
     # unchanged at 41 (still under the 60 function-cc ceiling, so no
     # `FROZEN_FUNCTION_CC` entry is needed). Net across both rounds, measured
-    # against this repo's main: 260 (cc 35) -> 311 (cc 41). Measured on this
-    # tree with the scanner below.
-    "vcs/approve_merge.py:_land_in_worktree": 311,
+    # against this repo's main: 260 (cc 35) -> 311 (cc 41).
+    # 311 -> 316 (+5), same follow-up, send-back round 2: step 9's `else`
+    # branch (forge state unknown/neither MERGED nor CLOSED) grew a 5-line
+    # comment plus a `left_as` branch so the warning says what the forge
+    # actually reported (e.g. "left OPEN") instead of assuming OPEN when the
+    # state could not be determined at all; step 7's call site also started
+    # threading the already-in-scope `default` parameter through to
+    # `_push_pr_head` (same line count). Complexity moved from estimated 41
+    # to estimated 42, still well under the 60 function-cc ceiling, so no
+    # `FROZEN_FUNCTION_CC` entry is needed. Measured on this tree with the
+    # scanner below.
+    "vcs/approve_merge.py:_land_in_worktree": 316,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.

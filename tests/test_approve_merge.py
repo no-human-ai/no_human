@@ -317,9 +317,9 @@ if __name__ == "__main__":
 # A `gh` stub: records every argv (one JSON array per line) to
 # $GH_STUB_LOG, and answers `pr view --json state[,mergedAt]` / `pr close`
 # from a one-line state file at $GH_STUB_STATE_FILE ("OPEN" by default).
-# `pr close` exists so a test can assert it is NEVER called (as of PR
-# #654, `land_task` itself has no close path at all) — tests that want to
-# exercise an already-CLOSED PR write "CLOSED" to the state file directly.
+# `pr close` exists so a test can assert it is NEVER called (`land_task`
+# itself has no close path at all) — tests that want to exercise an
+# already-CLOSED PR write "CLOSED" to the state file directly.
 # `pr view` always returns a `state` key and a `mergedAt` key (read by
 # `_forge_merge_state`'s `--json state,mergedAt` parse): a timestamp when
 # the state file says "MERGED" (unless $GH_STUB_NO_MERGED_AT is set, which
@@ -1379,7 +1379,7 @@ def test_full_gate_passing_run_still_lands(land_env):
         config=land_env.config, tested_commit_sha="",
     )
     assert result.ok, result.stderr
-    assert result.step == "close_pr"
+    assert result.step == "forge_state"
     assert land_env.remote_main_sha() != before
 
 
@@ -1553,7 +1553,7 @@ def test_cli_approve_passes_the_recorded_attempt_commit(land_env, tmp_path, monk
     def _fake_land_task(*, repo_path, branch, pr_url, task_id, task_title,
                           review_evidence, config, on_step=None, **kwargs):
         captured.update(kwargs)
-        return LandResult(ok=True, step="close_pr", landed_sha="a" * 40,
+        return LandResult(ok=True, step="forge_state", landed_sha="a" * 40,
                            pr_url=pr_url, branch=branch, message="landed")
 
     monkeypatch.setattr("no_human.vcs.approve_merge.land_task", _fake_land_task)
@@ -1869,10 +1869,13 @@ def test_restore_also_failing_leaves_a_stuck_head_without_claiming_restored_or_r
     7's own head push). The result must say the head branch is stuck and
     needs manual intervention, and must NOT say 'restored' or invite a
     bare 'retry' — a caller or watcher regexing on either word would
-    otherwise wrongly treat a landed-but-stuck-head state as a clean,
-    retryable failure. Mutating the restore-failed branch to always return
-    the SUCCESS wording would not have been caught by any existing test
-    before this one."""
+    otherwise wrongly treat a stuck-unlanded-head state as a clean,
+    retryable failure. It must also NOT claim the code landed: main never
+    advances in this scenario (asserted below), so the message must say
+    nothing landed on the default branch, not that it "HAS landed".
+    Mutating the restore-failed branch to always return the SUCCESS
+    wording would not have been caught by any existing test before this
+    one."""
     branch, head_sha = land_env.cut_branch("no-human/t-restore-failed")
     _install_pre_receive_reject_main_and_second_head_push(land_env, branch)
     result = land_task(
@@ -1886,6 +1889,8 @@ def test_restore_also_failing_leaves_a_stuck_head_without_claiming_restored_or_r
     assert "restored" not in result.stderr, result.stderr
     assert "retry" not in result.stderr, result.stderr
     assert "manual" in result.stderr.lower() or "stuck" in result.stderr.lower(), result.stderr
+    assert "HAS landed" not in result.stderr, result.stderr
+    assert "nothing landed" in result.stderr, result.stderr
     # The head branch never made it back to `head_sha` — it is stuck at the
     # landed (unreviewed) squash commit, exactly what the wording above
     # must communicate.
@@ -1897,8 +1902,8 @@ def test_merged_pr_is_not_closed(land_env):
     """AC2 (merged ⇒ not closed): once the forge reports the PR truly
     MERGED (`state == "MERGED"` with a non-empty `mergedAt`), `land_task`
     reports that in `result.message` with no warning at all — step 9 never
-    closes a PR under any forge state (operator hard rule, 2026-10-09, PR
-    #654). Fails on unmodified `main`: it closes every PR unconditionally
+    closes a PR under any forge state (operator hard rule, 2026-10-09).
+    Fails on unmodified `main`: it closes every PR unconditionally
     regardless of forge state."""
     land_env.gh_state.write_text("MERGED")
     branch, head_sha = land_env.cut_branch("no-human/t-merged-noclose")
@@ -1919,9 +1924,9 @@ def test_merged_pr_is_not_closed(land_env):
 def test_unmerged_pr_is_left_open_with_a_warning(land_env):
     """AC2 (never closes; warns instead): when the forge does NOT report
     the PR merged (state stays OPEN — the fixture default), `land_task`
-    still lands the code, but per the operator hard rule (2026-10-09, PR
-    #654) a PR whose code lands must end MERGED, never CLOSED — so this
-    NEVER falls back to closing the PR. It surfaces the unmerged state as
+    still lands the code, but per the operator hard rule (2026-10-09) a
+    PR whose code lands must end MERGED, never CLOSED — so this NEVER
+    falls back to closing the PR. It surfaces the unmerged state as
     a non-empty `result.warning` (also folded into `result.message`) that
     names the sha that landed, and leaves the PR itself untouched (no `pr
     close`, no `pr reopen`, no `pr comment` — nothing mutates the PR at
@@ -1948,7 +1953,7 @@ def test_ambiguous_merged_state_without_merged_at_leaves_pr_open_with_a_warning(
     """AC2 (ambiguous state): the forge reporting `state == "MERGED"` but an
     empty `mergedAt` is treated conservatively as NOT confirmed-merged, so
     `land_task` still lands the code and warns — and, per the operator hard
-    rule (2026-10-09, PR #654), never closes the PR either way; there is no
+    rule (2026-10-09), never closes the PR either way; there is no
     close call to no-op in the first place. Fails on unmodified `main`: no
     `warning` field, and no `--json state,mergedAt` read at all."""
     land_env.gh_state.write_text("MERGED")
@@ -2039,7 +2044,7 @@ def test_poll_exhausts_then_leaves_pr_open_with_a_warning(land_env, monkeypatch)
     up once `merge_poll_timeout_seconds` is exhausted — polling must not
     hang forever — and `land_task` reports that as a non-fatal warning
     naming the state and the landed sha. Per the operator hard rule
-    (2026-10-09, PR #654), it never falls back to closing the PR: no `pr
+    (2026-10-09), it never falls back to closing the PR: no `pr
     close` call fires, ever, regardless of how long the forge takes to
     report merged."""
     branch, head_sha = land_env.cut_branch("no-human/t-poll-exhaust")
@@ -2066,25 +2071,63 @@ def test_poll_exhausts_then_leaves_pr_open_with_a_warning(land_env, monkeypatch)
     assert not any(a[:2] == ["pr", "close"] for a in argvs), argvs
 
 
-@pytest.mark.parametrize("bad_timeout", [None, "not-a-number", -5, float("nan")],
-                         ids=["none", "non-numeric-string", "negative", "nan"])
-def test_bad_poll_timeout_config_never_raises_and_still_lands(land_env, monkeypatch, bad_timeout):
-    """`merge_poll_timeout_seconds` missing/`None`/non-numeric/negative used
-    to reach `float(value)` (or a `<=` comparison on a non-number)
-    unguarded, raising a `TypeError`/`ValueError` out of `land_task` AFTER
-    step 7/8 had already pushed the code -- the worst possible place to
-    raise, since the land already happened but the caller sees an exception
-    instead of a `LandResult`. `_coerce_poll_timeout` now absorbs all of
-    these into the real `_MERGE_POLL_TIMEOUT_S` default (30s) instead of
-    raising. Faking `_forge_merge_state` to report MERGED on the very first
-    read means this test resolves instantly regardless of which timeout
-    value `_coerce_poll_timeout` falls back to -- the point here is only
-    that `land_task` returns a `LandResult` and never raises, not the exact
-    budget used. Fails on unmodified `main`: `float(bad_timeout)` raises
-    before any fallback exists, and that exception propagates straight out
-    of `land_task`."""
+def _capturing_poll_wrapper(monkeypatch, captured):
+    """Wraps the REAL `_poll_forge_merge_state` so a test can record the
+    `timeout` it was actually called with, while still running its real
+    backoff loop (against a monkeypatched `_forge_merge_state` and fake
+    clock) rather than replacing the loop itself — a test that only
+    monkeypatches `_poll_forge_merge_state` to a canned return would not
+    notice if `_coerce_poll_timeout`'s output stopped reaching the poll at
+    all."""
+    real_poll = approve_merge._poll_forge_merge_state
+
+    def _wrapper(pr_url, cwd, *, timeout=None, **kw):
+        captured["timeout"] = timeout
+        return real_poll(pr_url, cwd, timeout=timeout, **kw)
+
+    monkeypatch.setattr(approve_merge, "_poll_forge_merge_state", _wrapper)
+
+
+@pytest.mark.parametrize(
+    "bad_timeout",
+    [None, "not-a-number", -5, float("nan"), float("inf")],
+    ids=["none", "non-numeric-string", "negative", "nan", "inf"],
+)
+def test_bad_poll_timeout_config_falls_back_to_default_and_keeps_polling(
+        land_env, monkeypatch, bad_timeout):
+    """`merge_poll_timeout_seconds` missing/`None`/non-numeric/negative/
+    non-finite used to reach `float(value)` (or a `<=` comparison on a
+    non-number) unguarded, raising a `TypeError`/`ValueError` out of
+    `land_task` AFTER step 7/8 had already pushed the code -- the worst
+    possible place to raise, since the land already happened but the
+    caller sees an exception instead of a `LandResult`. `_coerce_poll_timeout`
+    now absorbs all of these into the real `_MERGE_POLL_TIMEOUT_S` default
+    (30s) instead of raising.
+
+    The fake `_forge_merge_state` here returns OPEN on every read (never
+    MERGED), and `_fake_monotonic_clock` makes the REAL poll loop's ~30s
+    backoff resolve instantly -- this is deliberately NOT the same as a
+    fake that reports MERGED on the first read: that would make the poll
+    return after a single read regardless of what timeout it was given,
+    so a `_coerce_poll_timeout` that just returned its input unchanged
+    (bug reintroduced) would pass just as easily. Asserting the poll was
+    actually called with `timeout == 30.0`, and that it read the fake more
+    than once before giving up, pins both that the fallback value is
+    exactly the documented default AND that it actually reaches the poll.
+    Fails on unmodified `main`: `float(bad_timeout)` raises before any
+    fallback exists, and that exception propagates straight out of
+    `land_task`."""
     branch, head_sha = land_env.cut_branch("no-human/t-bad-poll-timeout")
-    monkeypatch.setattr(approve_merge, "_forge_merge_state", lambda pr_url, cwd: ("MERGED", ""))
+    calls = {"n": 0}
+
+    def _fake_state(pr_url, cwd):
+        calls["n"] += 1
+        return "OPEN", ""
+
+    monkeypatch.setattr(approve_merge, "_forge_merge_state", _fake_state)
+    _fake_monotonic_clock(monkeypatch)
+    captured = {}
+    _capturing_poll_wrapper(monkeypatch, captured)
 
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
@@ -2093,8 +2136,89 @@ def test_bad_poll_timeout_config_never_raises_and_still_lands(land_env, monkeypa
     )
 
     assert result.ok, result.stderr
-    assert result.warning == ""
-    assert "MERGED" in result.message
+    assert captured.get("timeout") == 30.0, captured
+    assert calls["n"] > 1, "a fake that always returns OPEN must be read more than once"
+    assert result.warning
+    assert "left OPEN" in result.warning
+
+
+def test_missing_poll_timeout_config_key_falls_back_to_default_and_keeps_polling(
+        land_env, monkeypatch):
+    """Same fallback as the parametrized test above, but for the key being
+    ABSENT from `config["approve_merge"]` entirely (e.g. an older config
+    file written before this key existed), not merely present and set to
+    `None` -- `dict.get("merge_poll_timeout_seconds", default)` and an
+    explicit `None` value take different code paths in general, so this is
+    its own case rather than another `bad_timeout` parametrization. Fails
+    if `land_task` ever stops defaulting a missing key, e.g. by switching
+    to `config["approve_merge"]["merge_poll_timeout_seconds"]` (a `KeyError`)."""
+    branch, head_sha = land_env.cut_branch("no-human/t-missing-poll-timeout-key")
+    calls = {"n": 0}
+
+    def _fake_state(pr_url, cwd):
+        calls["n"] += 1
+        return "OPEN", ""
+
+    monkeypatch.setattr(approve_merge, "_forge_merge_state", _fake_state)
+    _fake_monotonic_clock(monkeypatch)
+    captured = {}
+    _capturing_poll_wrapper(monkeypatch, captured)
+
+    config = {**land_env.config,
+              "approve_merge": {k: v for k, v in land_env.config["approve_merge"].items()
+                                 if k != "merge_poll_timeout_seconds"}}
+    assert "merge_poll_timeout_seconds" not in config["approve_merge"]
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=config,
+    )
+
+    assert result.ok, result.stderr
+    assert captured.get("timeout") == 30.0, captured
+    assert calls["n"] > 1, "a fake that always returns OPEN must be read more than once"
+    assert result.warning
+    assert "left OPEN" in result.warning
+
+
+@pytest.mark.parametrize("huge_timeout", [300.0 + 1, 1e9], ids=["just-over-ceiling", "1e9"])
+def test_poll_timeout_config_above_ceiling_is_clamped_not_unbounded(
+        land_env, monkeypatch, huge_timeout):
+    """A finite but absurd `merge_poll_timeout_seconds` (a config typo like
+    `1e9`, or anything past the documented 300s ceiling) must be clamped
+    DOWN to `_MERGE_POLL_TIMEOUT_CEILING_S`, not passed straight through --
+    otherwise a single `land_task` call could block effectively forever
+    polling a forge that never reports MERGED. This is distinct from the
+    missing/non-numeric/negative/non-finite cases above, which fall back
+    to the 30s *default*: a huge-but-valid number is clamped to the
+    ceiling instead, which is a different value than the default and would
+    not be caught by only asserting `captured["timeout"] == 30.0`. Fails
+    before the ceiling clamp existed: `captured["timeout"]` would equal
+    `huge_timeout` itself."""
+    branch, head_sha = land_env.cut_branch("no-human/t-poll-timeout-ceiling")
+    calls = {"n": 0}
+
+    def _fake_state(pr_url, cwd):
+        calls["n"] += 1
+        return "OPEN", ""
+
+    monkeypatch.setattr(approve_merge, "_forge_merge_state", _fake_state)
+    _fake_monotonic_clock(monkeypatch)
+    captured = {}
+    _capturing_poll_wrapper(monkeypatch, captured)
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=_land_env_config_with_poll_timeout(land_env, huge_timeout),
+    )
+
+    assert result.ok, result.stderr
+    assert captured.get("timeout") == approve_merge._MERGE_POLL_TIMEOUT_CEILING_S, captured
+    assert calls["n"] > 1, "a fake that always returns OPEN must be read more than once"
+    assert result.warning
+    assert "left OPEN" in result.warning
 
 
 def test_landed_commit_identity_and_shape_survive_the_head_push(land_env):
@@ -2133,7 +2257,7 @@ def test_landed_commit_identity_and_shape_survive_the_head_push(land_env):
 
 
 def test_never_closes_or_comments_on_the_pr(land_env):
-    """Operator hard rule (2026-10-09, PR #654): a PR whose code lands must
+    """Operator hard rule (2026-10-09): a PR whose code lands must
     end MERGED, never CLOSED — so `land_task` never calls `pr close` (or
     `pr comment`) at all, including in the plain not-yet-merged case (the
     fixture's OPEN default). Not-merged still lands the code and reports a
@@ -2664,6 +2788,33 @@ def test_push_pr_head_refuses_a_never_push_to_branch(land_env):
     err = approve_merge._push_pr_head(repo, "origin", "main", new_sha, before)
     assert err, "must refuse, not silently no-op"
     assert "never_push_to" in err
+    assert "main" in err
+    assert _remote_ref(land_env, "refs/heads/main") == before
+
+
+def test_push_pr_head_refuses_when_branch_equals_the_default_branch(land_env):
+    """`_push_pr_head`'s `default` guard (review send-back item 5): if a
+    caller ever passed the repo's default branch itself as the PR head
+    `branch` argument, force-with-leasing over it under the guise of
+    "restoring" or advancing a PR head would be exactly the kind of
+    history-rewrite of `main` this whole module exists to prevent. This is
+    a SEPARATE check from both `_branch_protected` (which only fires when
+    `never_push_to` happens to list the branch) and from the caller-level
+    step 7/8 ordering — it must refuse even if `main` is not itself present
+    in `never_push_to`. `landed_sha` is deliberately a different, real
+    commit than the current remote tip of `main` so the function's
+    `current == landed_sha` idempotency check cannot short-circuit this
+    test for the wrong reason (mirrors
+    `test_push_pr_head_refuses_a_never_push_to_branch` above). Fails if the
+    `default` guard is removed: this would fall through to the never_push_to
+    check (which may not fire) and then actually force-push `main`."""
+    before = land_env.remote_main_sha()
+    _, new_sha = land_env.cut_branch("no-human/t-default-as-head")
+    assert new_sha != before
+    repo = GitRepo(land_env.clone)
+    err = approve_merge._push_pr_head(repo, "origin", "main", new_sha, before, "main")
+    assert err, "must refuse, not silently no-op"
+    assert "default" in err
     assert "main" in err
     assert _remote_ref(land_env, "refs/heads/main") == before
 
@@ -3260,7 +3411,7 @@ async def test_second_approve_during_merge_returns_409(land_env, api_store_clien
                         review_evidence, config, on_step=None, **kwargs):
         entered.set()
         assert release.wait(timeout=5), "test barrier never released"
-        return LandResult(ok=True, step="close_pr", landed_sha="a" * 40,
+        return LandResult(ok=True, step="forge_state", landed_sha="a" * 40,
                            pr_url=pr_url, branch=branch, message="landed")
 
     monkeypatch.setattr("no_human.vcs.approve_merge.land_task", slow_land_task)
@@ -3373,7 +3524,7 @@ async def test_merge_lock_released_after_success_and_after_failure(
     # A retry after a failure must not be blocked by a stuck lock.
     def ok_land_task(*, repo_path, branch, pr_url, task_id, task_title,
                       review_evidence, config, on_step=None, **kwargs):
-        return LandResult(ok=True, step="close_pr", landed_sha="b" * 40,
+        return LandResult(ok=True, step="forge_state", landed_sha="b" * 40,
                            pr_url=pr_url, branch=branch, message="landed")
 
     monkeypatch.setattr("no_human.vcs.approve_merge.land_task", ok_land_task)

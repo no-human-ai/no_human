@@ -1726,9 +1726,9 @@ class WakeWatcher:
             # itself landed separately). PRs landed before that fix still
             # land as a LOCAL squash with no base-reachable HEAD, so GitHub
             # reports CLOSED for those — this branch, and the git-content
-            # probe below, stay for exactly that population. (As of PR #654,
-            # 2026-10-09: `land_task` itself never closes a PR — a PR the
-            # forge already reports CLOSED, unmerged, is left as-is, so a
+            # probe below, stay for exactly that population. (Operator hard
+            # rule, 2026-10-09: `land_task` itself never closes a PR — a PR
+            # the forge already reports CLOSED, unmerged, is left as-is, so a
             # CLOSED state seen here always predates this watcher's own poll
             # and is never something `land_task` just did.) Trusting the
             # CLOSED flag alone escalated every successful task in that
