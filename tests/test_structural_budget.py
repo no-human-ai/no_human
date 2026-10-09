@@ -1763,7 +1763,12 @@ FROZEN_FILE_LINES = {
     # another process can see it; the comments there now say who withdraws
     # it and why that branch alone fires `task_ended`. Measured with
     # `scan_tree` on the merged tree.
-    "cli/commands.py": 9279,
+    # 9279 -> 9323 (+44): the new `nh changelog-check` command (lists commits
+    # in a range that change a user-visible surface and touch no
+    # CHANGELOG.md, exits non-zero when any are found) plus a non-blocking
+    # note in `_approve_go_landed` naming it when the landed commit is such a
+    # gap in a repo that opts in. Measured with `scan_tree` on this tree.
+    "cli/commands.py": 9323,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

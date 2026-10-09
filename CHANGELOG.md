@@ -26,6 +26,17 @@ All notable changes to no_human. The format follows
   by `_route_unjudged_head` through the normal commit path, which already
   stamped `commit_sha` (unchanged).
 
+### Added
+- **`nh changelog-check` lists commits missing a CHANGELOG.md touch.**
+  Defaults to the range since the newest tag; prints sha and subject for
+  every commit that changes a user-visible surface (shipped source, the
+  desktop app, the web board, user-facing docs) and does not itself touch
+  `CHANGELOG.md`, and exits non-zero when that list is non-empty. `nh
+  approve --landed` now prints a non-blocking pointer to it when the landed
+  commit is such a gap, only in a repo whose landed tree has both a
+  `CHANGELOG.md` and the `src/no_human` layout the surface list describes;
+  any other target repo, including one with no CHANGELOG.md, gets no note.
+
 ## [0.2.4] - 2026-09-17
 
 ### Added
