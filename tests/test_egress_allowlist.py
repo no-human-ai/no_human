@@ -707,19 +707,28 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # read PR state and close the already-landed PR.
     "vcs/approve_merge.py": {
         "exec:git push": Allowed(
-            "your git remote — the squashed merge commit, pushed to the "
-            "default branch (`land_task`, :495)",
+            "your git remote — two pushes, in order: first the squashed "
+            "sha force-with-lease onto the PR's OWN head branch "
+            "(`_push_pr_head`, :951), then the same sha, non-force, onto "
+            "the default branch (`land_task`, :1598). The head-branch push "
+            "makes the PR's HEAD reachable from base so the forge reports "
+            "MERGED rather than CLOSED",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:git ls-remote": Allowed(
-            "your git remote — refs only; reads back that the pushed ref "
-            "landed (`land_task`, :504)",
+            "your git remote — refs only; reads back that each of the two "
+            "pushes above actually landed: the head-branch ref "
+            "(`_push_pr_head`, :946/:958) and the default-branch ref "
+            "(`land_task`, :1607)",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:gh": Allowed(
-            "your GitHub host — `pr view --json state` then `pr close` "
-            "(`_close_pr`, :223/:236); closes the PR the squash landed. "
-            "This is not `gh pr merge`",
+            "your GitHub host — `pr view --json state,mergedAt` "
+            "(`_forge_merge_state`, :904) to check whether the forge "
+            "already marked the PR MERGED after the head-branch push "
+            "above; only when it did NOT does `_close_pr`'s own "
+            "`pr view --json state` then `pr close` (:833/:842) run, as a "
+            "non-fatal fallback. This is not `gh pr merge`",
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
         "exec:glab": Allowed(

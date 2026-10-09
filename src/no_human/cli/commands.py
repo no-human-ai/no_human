@@ -5593,6 +5593,8 @@ async def _approve_go_single(config, task_id, land_one, force_superseded=False):
         )
         if result.gate_reason:
             console.print(f"  gate: {result.gate_reason}")
+        if result.warning:
+            console.print(f"  [yellow]warning:[/] {result.warning}")
         landing_note = outcome.get("landing_note") or ""
         if landing_note:
             console.print(f"  [dim]{landing_note}[/]")
@@ -5811,7 +5813,7 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
         result = land_task(
             repo_path=t.repo_path, branch=branch, pr_url=pr_url,
             task_id=t.id, task_title=t.title, review_evidence=evidence,
-            config=config.data, tested_commit_sha=tested,
+            config=config.data, tested_commit_sha=tested, head_sha=head_sha,
         )
 
         if result.skipped:

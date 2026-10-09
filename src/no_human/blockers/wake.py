@@ -1710,12 +1710,18 @@ class WakeWatcher:
             self._on_event("merged", merged_text)
             return "merged"
         if state == "CLOSED":
-            # GitHub's merged flag is never true for our PRs: the operator's
-            # hard rule is a LOCAL, identity-normalized squash merge (never
-            # `gh pr merge`), so a squash commit lands on base with a fresh
-            # SHA that has no commit-graph lineage back to the branch — every
-            # shipped PR still reports CLOSED here. Trusting that flag alone
-            # escalated every successful task (SCRUM-68 follow-up). Before
+            # New landings now DO report MERGED: `land_task` pushes the PR's
+            # own head branch to the landed sha (force-with-lease) BEFORE
+            # pushing that same sha to the default branch, so the HEAD commit
+            # is reachable from base and GitHub marks the PR MERGED — the
+            # MERGED rung above is the normal path for those (2026-10-09 PR
+            # #652 fix). PRs landed before that fix, and the legacy
+            # `_close_pr` fallback path (fired only when the forge doesn't
+            # confirm MERGED), still land as a LOCAL squash with no
+            # base-reachable HEAD, so GitHub reports CLOSED for those — this
+            # branch, and the git-content probe below, stay for exactly that
+            # population. Trusting the CLOSED flag alone escalated every
+            # successful task in that population (SCRUM-68 follow-up). Before
             # escalating, ask git (not GitHub) whether the branch's content is
             # actually present on its base — that's true regardless of how
             # the commit graph got there.

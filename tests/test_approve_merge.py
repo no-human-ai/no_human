@@ -315,8 +315,14 @@ if __name__ == "__main__":
 '''
 
 # A `gh` stub: records every argv (one JSON array per line) to
-# $GH_STUB_LOG, and answers `pr view --json state` / `pr close` from a
-# one-line state file at $GH_STUB_STATE_FILE ("OPEN" by default).
+# $GH_STUB_LOG, and answers `pr view --json state[,mergedAt]` / `pr close`
+# from a one-line state file at $GH_STUB_STATE_FILE ("OPEN" by default).
+# `pr view` always returns a `state` key; it also always returns a
+# `mergedAt` key (ignored by `_close_pr`'s `--json state`-only parse, used
+# by `_forge_merge_state`'s `--json state,mergedAt` parse): a timestamp when
+# the state file says "MERGED" (unless $GH_STUB_NO_MERGED_AT is set, which
+# forces `null` even then, to simulate the ambiguous real-GitHub-never-does-
+# this-but-defensive-code-must-handle-it shape), else `null`.
 _GH_STUB = '''\
 #!/usr/bin/env python3
 import json
@@ -333,7 +339,10 @@ state_file = Path(os.environ["GH_STUB_STATE_FILE"])
 
 if argv[:2] == ["pr", "view"]:
     state = state_file.read_text().strip() if state_file.exists() else "OPEN"
-    print(json.dumps({"state": state}))
+    merged_at = None
+    if state == "MERGED" and not os.environ.get("GH_STUB_NO_MERGED_AT"):
+        merged_at = "2026-10-09T12:00:00Z"
+    print(json.dumps({"state": state, "mergedAt": merged_at}))
     sys.exit(0)
 if argv[:2] == ["pr", "close"]:
     state_file.write_text("CLOSED")
@@ -415,6 +424,34 @@ def _push_conflicting_change(land_env, path: str, content: str) -> str:
     _git(race, "commit", "-qm", f"conflict: {path}")
     _git(race, "push", "-q", "origin", "HEAD:main")
     return _git(race, "rev-parse", "HEAD").stdout.strip()
+
+
+def _remote_ref(land_env, ref: str) -> str:
+    """The sha *ref* currently points at on `land_env.origin` (the bare
+    remote) — e.g. `refs/heads/<branch>` or `"main"`. Empty string if the
+    ref does not exist there."""
+    return _git(land_env.origin, "rev-parse", "--verify", "--quiet",
+                ref, check=False).stdout.strip()
+
+
+def _install_post_receive(land_env) -> Path:
+    """Install a `post-receive` hook on `land_env.origin` (the bare remote)
+    that appends each updated ref's name to a log file, one per line, in
+    the exact order the SERVER processed them — proof of push ORDER, not
+    just of eventual push outcome (two separate `git push` invocations can
+    both succeed without this telling you which one the remote saw first;
+    the hook does). Returns the log file path."""
+    log = land_env.tmp_path / "post_receive_log.txt"
+    log.write_text("")
+    hooks_dir = land_env.origin / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    hook = hooks_dir / "post-receive"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"while read oldrev newrev refname; do echo \"$refname\" >> {log}; done\n"
+    )
+    hook.chmod(0o755)
+    return log
 
 
 def _cut_branch_no_classification(land_env, name: str) -> tuple[str, str]:
@@ -1443,6 +1480,264 @@ def test_aborts_when_tip_moved_during_land(land_env):
     assert land_env.remote_main_sha() != before
 
 
+def test_pr_head_moves_to_the_landed_sha_before_main_advances(land_env, monkeypatch):
+    """AC1 (head before base, ff base): `land_task` pushes the landed squash
+    sha onto the PR's OWN head branch BEFORE it pushes that same sha to the
+    default branch — the order GitHub needs to recognise the PR's HEAD as
+    reachable from base and report MERGED, not CLOSED (operator hard rule,
+    2026-10-09). Proven three ways: a real server-side `post-receive` hook
+    records which ref the remote processed first; both refs end up AT the
+    landed sha; and the default-branch push itself is a strict, non-force
+    fast-forward (the pre-land tip is an ancestor of the landed sha, and the
+    push argv carries no `--force*` flag). Fails on unmodified `main`: the
+    PR's own head branch never moves there at all."""
+    branch, head_sha = land_env.cut_branch("no-human/t-head-before-base")
+    log = _install_post_receive(land_env)
+    old_main = land_env.remote_main_sha()
+    land_env.gh_state.write_text("MERGED")
+
+    from no_human.vcs import approve_merge as am
+    real_sh = am._sh
+    push_calls: list[list[str]] = []
+
+    def _spy_sh(args, **kw):
+        if len(args) >= 2 and args[0] == "git" and args[1] == "push":
+            push_calls.append(list(args))
+        return real_sh(args, **kw)
+
+    monkeypatch.setattr(am, "_sh", _spy_sh)
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    assert _remote_ref(land_env, f"refs/heads/{branch}") == result.landed_sha
+    assert _remote_ref(land_env, "refs/heads/main") == result.landed_sha
+
+    lines = [l.strip() for l in log.read_text().splitlines() if l.strip()]
+    assert f"refs/heads/{branch}" in lines, lines
+    assert "refs/heads/main" in lines, lines
+    assert lines.index(f"refs/heads/{branch}") < lines.index("refs/heads/main"), lines
+
+    anc = _git(land_env.origin, "merge-base", "--is-ancestor",
+               old_main, result.landed_sha, check=False)
+    assert anc.returncode == 0, "the default-branch push must be a strict ff"
+
+    default_push = next(
+        c for c in push_calls if c[-1] == f"{result.landed_sha}:refs/heads/main")
+    assert not any(a.startswith("--force") for a in default_push), default_push
+
+
+def test_head_push_uses_force_with_lease_against_the_reviewed_head(land_env):
+    """AC1 (lease) / AC4 (nothing lands after a head-push failure): if the
+    PR's own head branch moved (a third party force-pushed it) between the
+    review this run is landing and this run's own head-branch push, the
+    EXPLICIT `--force-with-lease=refs/heads/<branch>:<expected>` must refuse
+    — git itself rejects a lease whose expected value no longer matches the
+    remote, independent of this module's own idempotency check. Nothing
+    reaches the default branch. Fails on unmodified `main`: there is no
+    head-branch push at all, so nothing can refuse it."""
+    branch, head_sha = land_env.cut_branch("no-human/t-lease-stale")
+    before_main = land_env.remote_main_sha()
+    staged: dict[str, str] = {}
+
+    def _race_head():
+        race = land_env.tmp_path / "race-head"
+        _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
+        _git(race, "checkout", "-q", branch)
+        (race / "RACE_HEAD.md").write_text("third-party push onto the PR head\n")
+        _git(race, "add", "RACE_HEAD.md")
+        _git(race, "commit", "-qm", "race: unrelated push onto PR head")
+        _git(race, "push", "-q", "origin", f"HEAD:{branch}")
+        staged["sha"] = _git(race, "rev-parse", "HEAD").stdout.strip()
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config, _before_push=_race_head,
+    )
+    assert not result.ok
+    assert result.step == "push_head"
+    assert "stale" in result.stderr.lower() or "lease" in result.stderr.lower(), result.stderr
+    assert staged.get("sha")
+    assert land_env.remote_main_sha() == before_main
+    assert _remote_ref(land_env, f"refs/heads/{branch}") == staged["sha"]
+
+
+def test_head_push_refusal_makes_no_gh_call(land_env):
+    """AC4: a refused head-branch push must not reach the forge at all — the
+    PR stays exactly as it was (no `pr close`, no `pr view`), since nothing
+    about its landing state has changed yet. Fails on unmodified `main`:
+    there is no `push_head` step to refuse in the first place, so this
+    scenario cannot even be constructed against it the same way (the
+    equivalent race on `main` lands as a `step == "push"` failure that still
+    runs `_close_pr` on unmodified code's unconditional close logic)."""
+    branch, head_sha = land_env.cut_branch("no-human/t-lease-nogh")
+
+    def _race_head():
+        race = land_env.tmp_path / "race-head-nogh"
+        _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
+        _git(race, "checkout", "-q", branch)
+        (race / "RACE_HEAD.md").write_text("third-party push onto the PR head\n")
+        _git(race, "add", "RACE_HEAD.md")
+        _git(race, "commit", "-qm", "race: unrelated push onto PR head")
+        _git(race, "push", "-q", "origin", f"HEAD:{branch}")
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config, _before_push=_race_head,
+    )
+    assert not result.ok
+    assert result.step == "push_head"
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert not any(a[:2] == ["pr", "close"] for a in argvs), argvs
+
+
+def test_default_branch_push_failure_after_head_push_leaves_the_pr_open(land_env):
+    """AC4: when the HEAD-branch push (step 7) succeeds but the default-
+    branch push (step 8) then fails — here, a concurrent push races `main`
+    forward in between, via the `_after_head_push` test seam — the PR's own
+    head branch has ALREADY moved to the landed sha and nothing landed on
+    `main`. The result must say the PR is left OPEN, and no fallback close
+    may fire for a PR that was never actually landed on the default branch.
+    Fails on unmodified `main`: there is no `_after_head_push` seam, no
+    head-branch push to have already happened, and no "left OPEN" message —
+    the old code closes the PR regardless."""
+    branch, head_sha = land_env.cut_branch("no-human/t-afterhead-race")
+    raced: dict[str, str] = {}
+
+    def _race_main():
+        raced["sha"] = land_env.advance_origin("post-head-race")
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config, _after_head_push=_race_main,
+    )
+    assert not result.ok
+    assert result.step == "push"
+    assert raced.get("sha")
+    assert "left OPEN" in result.stderr, result.stderr
+    assert branch in result.stderr
+    assert result.landed_sha
+    assert _remote_ref(land_env, f"refs/heads/{branch}") == result.landed_sha
+    assert land_env.remote_main_sha() == raced["sha"]
+    assert land_env.remote_main_sha() != result.landed_sha
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert not any(a[:2] == ["pr", "close"] for a in argvs), argvs
+
+
+def test_merged_pr_is_not_closed(land_env):
+    """AC2 (merged ⇒ not closed): once the forge reports the PR truly
+    MERGED (`state == "MERGED"` with a non-empty `mergedAt`), `land_task`
+    must not close it — `_close_pr` is the legacy fallback now, not the
+    unconditional step 9. Fails on unmodified `main`: it closes every PR
+    unconditionally regardless of forge state."""
+    land_env.gh_state.write_text("MERGED")
+    branch, head_sha = land_env.cut_branch("no-human/t-merged-noclose")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    assert result.warning == ""
+    assert "MERGED" in result.message
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert not any(a[:2] == ["pr", "close"] for a in argvs), argvs
+    view_calls = [a for a in argvs if a[:2] == ["pr", "view"]]
+    assert any("state,mergedAt" in a for a in view_calls), view_calls
+
+
+def test_unmerged_pr_is_closed_as_a_fallback_with_a_warning(land_env):
+    """AC2 (fallback is a warning): when the forge does NOT report the PR
+    merged (state stays OPEN — the fixture default), `land_task` still
+    lands the code and falls back to the legacy unconditional close, but
+    now surfaces that as a non-empty `result.warning` (also folded into
+    `result.message`) rather than silently treating it as the normal path.
+    Fails on unmodified `main`: there is no `warning` field at all."""
+    branch, head_sha = land_env.cut_branch("no-human/t-fallback-warning")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    close_calls = [a for a in argvs if a[:2] == ["pr", "close"]]
+    assert close_calls, f"no `pr close` call recorded: {argvs}"
+    assert not any("--comment" in a for a in close_calls)
+    assert not any(a[:2] == ["pr", "comment"] for a in argvs)
+    assert result.warning, "the fallback close must be reported as a warning"
+    assert "merged" in result.warning.lower()
+    assert result.warning in result.message
+
+
+def test_state_check_error_falls_back_to_close_with_a_warning(land_env, monkeypatch):
+    """AC2 (ambiguous state): the forge reporting `state == "MERGED"` but an
+    empty `mergedAt` is treated conservatively as NOT confirmed-merged, so
+    `land_task` still falls back and warns. `_close_pr`'s own separate
+    `--json state`-only read (unaffected by the `mergedAt` ambiguity) sees
+    `state == "MERGED"` and no-ops its own close by its own (unmodified,
+    out-of-scope) idempotency check — so no `pr close` call fires here even
+    though `result.warning` is set; that is this scenario's correct,
+    slightly odd shape, not a bug in this test. Fails on unmodified `main`:
+    no `warning` field, and no `--json state,mergedAt` read at all."""
+    land_env.gh_state.write_text("MERGED")
+    monkeypatch.setenv("GH_STUB_NO_MERGED_AT", "1")
+    branch, head_sha = land_env.cut_branch("no-human/t-ambiguous-merged")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="feat: add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    assert result.warning
+    assert result.warning in result.message
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    view_calls = [a for a in argvs if a[:2] == ["pr", "view"]]
+    assert any("state,mergedAt" in a for a in view_calls), view_calls
+    assert not any(a[:2] == ["pr", "close"] for a in argvs), argvs
+
+
+def test_landed_commit_identity_and_shape_survive_the_head_push(land_env):
+    """AC3 (identity / shape): the head-branch push introduced by this fix
+    must not change WHAT lands — same single-parent squash commit, same
+    operator author/committer identity, same message, and still never a
+    `gh pr merge` call. Fails on unmodified `main` only in the narrow sense
+    that it pins the identity/shape invariant the fix must not disturb;
+    written to catch a regression where a future change routes the head
+    push through something that mutates authorship (e.g. `gh pr merge`)."""
+    land_env.gh_state.write_text("MERGED")
+    branch, head_sha = land_env.cut_branch("no-human/t-identity-head")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="task-deadbeef", task_title="feat: add the feature everyone wants",
+        review_evidence="review PASS on abc123 after 2 round(s)",
+        config=land_env.config,
+    )
+    assert result.ok, result.stderr
+    name, email = _commit_identity(land_env, result.landed_sha)
+    assert (name, email) == ("clone-user", "clone@example.invalid")
+    committer = _git(land_env.origin, "show", "-s", "--format=%cn%x09%ce",
+                      result.landed_sha).stdout.strip()
+    cn, _, ce = committer.partition("\t")
+    assert (cn, ce) == ("clone-user", "clone@example.invalid")
+    parents = _git(land_env.origin, "show", "-s", "--format=%P",
+                    result.landed_sha).stdout.strip()
+    assert len(parents.split()) == 1, (
+        f"expected a single parent (no merge commit), got: {parents!r}")
+    msg = _git(land_env.origin, "show", "-s", "--format=%B", result.landed_sha).stdout
+    assert "feat: add the feature everyone wants" in msg
+    assert "task-deadbeef" in msg
+    assert "review PASS on abc123 after 2 round(s)" in msg
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert not any(a[:2] == ["pr", "merge"] for a in argvs), argvs
+
+
 def test_closes_pr_without_comment(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-close")
     result = land_task(
@@ -1457,6 +1752,11 @@ def test_closes_pr_without_comment(land_env):
     for a in argvs:
         assert "--comment" not in a
         assert a[:2] != ["pr", "comment"]
+    # Not-merged ⇒ fallback-close, reported as a warning (see
+    # `test_unmerged_pr_is_closed_as_a_fallback_with_a_warning` for the
+    # dedicated AC2 coverage of this same OPEN-state scenario).
+    assert result.warning
+    assert result.warning in result.message
 
 
 def test_already_closed_pr_is_not_a_failure(land_env):
@@ -1470,6 +1770,7 @@ def test_already_closed_pr_is_not_a_failure(land_env):
     assert result.ok, result.stderr
     argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert not any(a[:2] == ["pr", "close"] for a in argvs)
+    assert result.warning == ""
 
 
 def test_failure_removes_temp_worktree_and_keeps_awaiting_approval(land_env):
