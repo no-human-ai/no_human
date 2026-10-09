@@ -1,120 +1,102 @@
 # How I verified this — full log
 
-_Harness-captured record for task `a9eb5e52`, commit `0cf6665fe612b4a0c871605f3ac4d0d913819104` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `a9eb5e52`, commit `ab882fb2213ab04a390e1329fbcd8dd616503d10` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+10 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q "tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]" 2>&1 | tail -40`
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
 
 ```
-F                                                                        [100%]
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.28067.2fd5d39a
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.28067.2fd5d39a
+Installed 73 packages in 95ms
+..F................                                                      [100%]
 =================================== FAILURES ===================================
-__________ test_no_read_text_in_the_harness_omits_its_encoding[tests] __________
+_______________________ test_no_new_oversized_functions ________________________
 
-area = 'tests'
-
-    @pytest.mark.parametrize("area", GUARDED_AREAS)
-    def test_no_read_text_in_the_harness_omits_its_encoding(area):
-        offenders = []
-        for path in sorted((REPO_ROOT / area).rglob("*.py")):
-            rel = path.relative_to(REPO_ROOT).as_posix()
-            for lineno in _unencoded_read_text(path):
-                offenders.append(f"{rel}:{lineno}")
-    
->       assert offenders == [], (
-            "these
-[... 521 of 1,660 characters omitted from the middle ...]
-_merge.py:1519
-E       assert ['tests/test_...erge.py:1519'] == []
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_overri
+[... 527 of 1,666 characters omitted from the middle ...]
+EN_FUNC...s not frozen'] == []
 E         
-E         Left contains one more item: 'tests/test_approve_merge.py:1519'
+E         Left contains one more item: 'FROZEN_FUNCTION_LINES: vcs/approve_merge.py:_land_in_worktree is 302 (> 300) and is not frozen'
 E         Use -v to get more diff
 
-tests/test_text_reads_declare_encoding.py:160: AssertionError
+tests/test_structural_budget.py:2651: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]
-1 failed in 1.37s
+FAILED tests/test_structural_budget.py::test_no_new_oversized_functions - Ass...
+1 failed, 18 passed in 3.17s
 ```  
-  _excerpt - 1,660 characters of output in total_
+  _excerpt - 1,662 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | tail -60`
-
-```
-F                                                                        [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
-
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 3036, 'api/app.py': 6367, 'blockers/wake.py': 2769, 'cli/commands.py': 9269, ...}, 248, 3767)
-
-    def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_
-[... 701 of 1,840 characters omitted from the middle ...]
-/command...atchets down'] == []
-E             
-E             Left contains 3 more items, first extra item: 'cli/commands.py: frozen 9267, now 9269 (+2); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:2659: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed in 0.95s
-```  
-  _excerpt - 1,840 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown tests/test_text_reads_declare_encoding.py tests/test_already_satisfied_landing.py 2>&1 | tail -60`
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
 
 ```
-.........................                                                [100%]
-25 passed in 4.88s
+...................                                                      [100%]
+19 passed in 1.66s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q -n 4 tests/test_approve_merge.py tests/test_land_head_push_no_rewake.py tests/test_egress_allowlis [... 59 of 402 characters omitted from the middle ...] declare_encoding.py tests/test_already_satisfied_landing.py tests/test_approve_ready_cli.py tests/test_landed_override.py 2>&1 | tail -100`
+- `uv run pytest tests/test_egress_allowlist.py -q 2>&1 | tail -60`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 29%]
-........................................................................ [ 59%]
-........................................................................ [ 89%]
-..........................                                               [100%]
-242 passed in 35.71s
+......................                                                   [100%]
+22 passed in 15.36s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q -n 4 tests/test_merge_policy_wiring.py tests/test_wake_pr_closed_repair.py tests/test_blockers.py 2>&1 | tail -60`
+- `timeout 280 uv run pytest tests/test_approve_merge.py -q -p no:cacheprovider 2>&1 | tail -100`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 51%]
-.....................................................................    [100%]
-141 passed in 5.88s
+(eval):1: command not found: timeout
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/a9eb5e52f8c64644bbffcca9f319298a.59192.944df1c3 uv run pytest -q -n 4 \   tests/test_approve_merge.py \   tests/test_land_head_push_no_rewake.py \   tests/test_egr [... 199 of 542 characters omitted from the middle ...] d_override.py \   tests/test_merge_policy_wiring.py \   tests/test_wake_pr_closed_repair.py \   tests/test_blockers.py \   2>&1 | tail -30`
+- `uv run pytest tests/test_approve_merge.py -q -k "afterhead or tip_moved" 2>&1 | tail -80`
 
 ```
-bringing up nodes...
-bringing up nodes...
+.                                                                        [100%]
+1 passed, 86 deselected in 3.05s
+```
 
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-........................................................................ [ 56%]
-........................................................................ [ 75%]
-........................................................................ [ 93%]
-.......................                                                  [100%]
-383 passed in 38.02s
+- `uv run pytest tests/test_approve_merge.py --collect-only -q 2>&1 | grep -i "afterhead\|tip_moved\|error"`
+
+```
+tests/test_approve_merge.py::test_aborts_when_tip_moved_during_land
+tests/test_approve_merge.py::test_state_check_error_falls_back_to_close_with_a_warning
+```
+
+- `uv run pytest tests/test_approve_merge.py -q -k "after_head_push or tip_moved" 2>&1 | tail -80`
+
+```
+..                                                                       [100%]
+2 passed, 85 deselected in 3.18s
+```
+
+- `uv run pytest tests/test_already_satisfied_landing.py -q 2>&1 | tail -40`
+
+```
+.........                                                                [100%]
+9 passed in 2.80s
+```
+
+- `uv run pytest tests/test_approve_merge.py -q -k "push_pr_head or forge_merge_state_gitlab or forge_merge_state_github or stale_head" --collect-only -q 2>&1 | tail -15`
+
+```
+tests/test_approve_merge.py: 9
+```
+
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -10`
+
+```
+...................                                                      [100%]
+19 passed in 1.69s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
+- no command recognised as e2e, http, typecheck, lint, build was recorded
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
