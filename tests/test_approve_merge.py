@@ -1516,7 +1516,7 @@ def test_pr_head_moves_to_the_landed_sha_before_main_advances(land_env, monkeypa
     assert _remote_ref(land_env, f"refs/heads/{branch}") == result.landed_sha
     assert _remote_ref(land_env, "refs/heads/main") == result.landed_sha
 
-    lines = [l.strip() for l in log.read_text().splitlines() if l.strip()]
+    lines = [l.strip() for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert f"refs/heads/{branch}" in lines, lines
     assert "refs/heads/main" in lines, lines
     assert lines.index(f"refs/heads/{branch}") < lines.index("refs/heads/main"), lines
