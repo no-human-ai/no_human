@@ -2496,7 +2496,18 @@ def task_cancel(task_id, reason):
             prior_status = t.status
             prior_blocker = t.blocker if isinstance(t.blocker, dict) else None
             t.context = await store.record_cancel_reason(t.id, reason)
-            await store.clear_cancel_request(t.id)
+            # The stop flag raised above is NOT withdrawn here. This branch is
+            # the one where we could NOT confirm a server hard-stopped the
+            # attempt — `_server_owns_worker` returns False while `nh serve` is
+            # running (it binds no socket) and whenever the pidfile fallback
+            # misses — so an attempt may be live in another process right now.
+            # The cooperative column is the only signal that attempt can
+            # observe (`Orchestrator._pending_cancel` re-reads it while the
+            # task runs); clearing it exactly where it is load-bearing left a
+            # cancelled task holding a worker slot, spending tokens and opening
+            # its own PR. It is withdrawn by the attempt that honours it
+            # (`Orchestrator._honor_cancel`), by the server's `cancel_task`
+            # endpoint, and by `nh task retry` / `POST /retry` before requeue.
             await store.set_status(
                 t, TaskStatus.FAILED, validate=False, human_override=True,
                 event=human_event(
@@ -2505,12 +2516,11 @@ def task_cancel(task_id, reason):
             )
             await close_draft_pr_on_cancel(store, t, reason=reason, config=config)
             # Unconditional (unlike the API endpoint's mirror of this same
-            # helper, which is gated on `not stopped`): this branch only ever
-            # runs when there is NO live server-owned session to cancel — the
-            # `_server_owns_worker(...) and t.status in _ACTIVE_STATES` branch
-            # above already returned for that case. So there is no in-process
-            # `_run_attempt` unwind that could fire `task_ended` on its own;
-            # this direct write is the only place that ever will.
+            # helper, which is gated on `not stopped`): no attempt runs in
+            # THIS process, and an attempt live in another process honours
+            # the surviving flag through `_honor_cancel`, whose "cancelled"
+            # emit is deliberately not one of `_TASK_END_KINDS` — so this
+            # direct write is the only place that fires `task_ended` here.
             from .. import telemetry
             await telemetry.record_task_cancelled(store, t, config=config.data)
             console.print(f"[red]cancelled[/] {t.id[:8]} — reason: {reason}")

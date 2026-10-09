@@ -3790,6 +3790,20 @@ class Orchestrator:
             # whatever branch this worker happens to have active.
             sha, branch = prior["sha"], (prior.get("branch") or "")
             kept_prior = True
+        # A human's CANCEL wins over this park. `nh task cancel` leaves the
+        # flag raised when it cannot confirm a stop, and has already written
+        # FAILED + `cancel_reason`; `set_status` would refuse BLOCKED, but
+        # `update_task_columns` has no status guard and would stamp a
+        # USER_PAUSED blocker onto that cancelled row. Stop, keep the
+        # checkpoint above, retire the flag — and write nothing else.
+        stored = await self.store.get_task(task.id)
+        if (stored is not None and stored.status is TaskStatus.FAILED
+                and (stored.context or {}).get("cancel_reason")):
+            await self.store.clear_cancel_request(task.id)
+            self.emit("cancelled", f"stopped: task was cancelled ({reason})",
+                      status="failed")
+            return TaskOutcome(stored, status=TaskStatus.FAILED,
+                               detail=f"cancelled by operator: {reason}")
         prior_status = task.status
         prior_blocker = task.blocker if isinstance(task.blocker, dict) else None
         task.blocker = user_pause_blocker(

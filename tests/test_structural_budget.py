@@ -1758,7 +1758,12 @@ FROZEN_FILE_LINES = {
     # `nh task cancel` branches (the cancel and the failed-task re-label), so
     # a cancelled task's outstanding draft PR is retitled and closed.
     # Measured on this tree with the scanner below.
-    "cli/commands.py": 9269,
+    # 9269 -> 9279 (+10): `nh task cancel`'s unconfirmed-stop branch no longer
+    # withdraws the stop flag it raised, so an attempt still running in
+    # another process can see it; the comments there now say who withdraws
+    # it and why that branch alone fires `task_ended`. Measured with
+    # `scan_tree` on the merged tree.
+    "cli/commands.py": 9279,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
