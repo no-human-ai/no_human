@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "e2e": "node e2e/run-all.mjs",
+    "e2e:ci": "node e2e/run-all.mjs --lane=ci",
     "test": "node --test src/*.test.mjs",
     "lint": "eslint ."
   },

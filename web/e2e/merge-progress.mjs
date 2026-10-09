@@ -4,6 +4,14 @@
 // progress frames (`task_event`: merge_started/merge_step_*/human_merged)
 // ride the existing broadcast socket, so this stub is what lets a test push
 // them without a real backend.
+//
+// Every approve-button selector is scoped to `.slideover`: the AI-config
+// nudge's "Open Settings" CTA (src/App.jsx, `btn btn-approve
+// nh-aiconfig-nudge-cta`) shares the `.btn-approve` class and renders first in
+// the DOM, so a bare `.btn-approve` clicked that CTA instead of the drawer's
+// Approve button and the first check never measured the merge button at all.
+// The drawer's events accordion section is labelled "Event log" (SlideOver.jsx
+// section list), not "Activity".
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -137,14 +145,14 @@ async function openDrawer(opts = {}) {
 // server round-trip resolves.
 {
   const { ctx, page, errors } = await openDrawer({ approveDelayMs: 3000 });
-  const btn = page.locator(".btn-approve");
+  const btn = page.locator(".slideover .btn-approve");
   // Measured entirely IN-BROWSER (performance.now() either side of the
   // click + a MutationObserver on the button), not round-tripped through
   // Node/CDP — a Node-side Date.now() around Playwright's own click()/
   // waitFor() calls bundles in automation-protocol latency that has nothing
   // to do with the React state-change latency this criterion is about.
   const elapsed = await page.evaluate(() => new Promise((resolve) => {
-    const el = document.querySelector(".btn-approve");
+    const el = document.querySelector(".slideover .btn-approve");
     const t0 = performance.now();
     const done = () => resolve(performance.now() - t0);
     const obs = new MutationObserver(() => {
@@ -166,7 +174,7 @@ async function openDrawer(opts = {}) {
 {
   const { ctx, page, mock } = await openDrawer({ approveDelayMs: 1000 });
   await page.evaluate(() => {
-    const btn = document.querySelector(".btn-approve");
+    const btn = document.querySelector(".slideover .btn-approve");
     btn.click();
     setTimeout(() => btn.click(), 20);
   });
@@ -182,7 +190,7 @@ async function openDrawer(opts = {}) {
 // plain idle "Approve and merge" after the click.
 {
   const { ctx, page, errors } = await openDrawer({ approveDelayMs: 400 });
-  const btn = page.locator(".btn-approve");
+  const btn = page.locator(".slideover .btn-approve");
   const labelsSeen = [];
   const poll = setInterval(() => {
     btn.innerText().then((t) => labelsSeen.push(t)).catch(() => {});
@@ -238,7 +246,7 @@ async function openDrawer(opts = {}) {
     approveStatus: 500,
     approveBody: { detail: { step: "push", stderr: "remote: rejected — non-fast-forward, retry after fetch" } },
   });
-  await page.locator(".btn-approve").click();
+  await page.locator(".slideover .btn-approve").click();
   const banner = page.locator(".flash-banner");
   await banner.waitFor({ state: "visible", timeout: 3000 });
   const text = await banner.innerText();
@@ -260,7 +268,7 @@ async function openDrawer(opts = {}) {
 {
   const REFUSAL = "0936e40a3 is not an ancestor of fix/global-flags-defeat-the-merge-rules — refusing.";
   const { ctx, page } = await openDrawer({ approveStatus: 409, approveBody: { detail: REFUSAL } });
-  await page.locator(".btn-approve").click();
+  await page.locator(".slideover .btn-approve").click();
   const banner = page.locator(".flash-banner");
   await banner.waitFor({ state: "visible", timeout: 3000 });
   const bannerText = await banner.innerText();
@@ -278,7 +286,7 @@ async function openDrawer(opts = {}) {
 {
   const REFUSAL = "Merge already in progress";
   const { ctx, page } = await openDrawer({ approveStatus: 409, approveBody: { detail: REFUSAL } });
-  await page.locator(".btn-approve").click();
+  await page.locator(".slideover .btn-approve").click();
   await page.locator(".flash-banner").waitFor({ state: "visible", timeout: 3000 });
 
   await page.locator(".so-close").click();
@@ -301,7 +309,7 @@ async function openDrawer(opts = {}) {
 // path this bug never affected).
 {
   const { ctx, page } = await openDrawer({ approveDelayMs: 50 });
-  await page.locator(".btn-approve").click();
+  await page.locator(".slideover .btn-approve").click();
   await page.waitForTimeout(600);
   const toastVisible = await page.locator(".nh-toast").isVisible().catch(() => false);
   check("[success] no toast on a successful approve", !toastVisible);
@@ -322,8 +330,8 @@ async function openDrawer(opts = {}) {
   });
   // awaiting_approval tasks default-open on the Review section (defaultOpenSection),
   // and each accordion section only mounts (and fetches) its body while open — so
-  // the Activity tab's poll-fetch of /events doesn't even fire until it's opened.
-  await page.getByRole("button", { name: /^Activity/ }).click();
+  // the Event log section's poll-fetch of /events doesn't even fire until it's opened.
+  await page.getByRole("button", { name: /^Event log/ }).click();
   const row = page.locator(".rich-kind.ak-approve_refused");
   await row.waitFor({ state: "visible", timeout: 3000 });
   const rowText = await row.innerText();
@@ -340,7 +348,7 @@ async function openDrawer(opts = {}) {
   const { ctx, page } = await openDrawer({
     approveDelayMs: 600, approveStatus: 409, approveBody: { detail: "Merge already in progress" },
   });
-  const btn = page.locator(".btn-approve");
+  const btn = page.locator(".slideover .btn-approve");
   await btn.click();
   await page.waitForTimeout(150);
   const midText = await btn.innerText();

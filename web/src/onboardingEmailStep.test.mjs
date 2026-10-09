@@ -13,9 +13,12 @@ import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const src = readFileSync(here + "Onboarding.jsx", "utf8");
+// BASE_STEPS moved out of Onboarding.jsx into its own module (so an e2e walk
+// can import the real source of truth instead of hardcoding a rail length).
+const stepsSrc = readFileSync(here + "onboardingSteps.js", "utf8");
 
 function stepKeysInOrder(source) {
-  const m = source.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
+  const m = source.match(/export const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(m, "BASE_STEPS array not found");
   const body = m[1];
   const keys = [...body.matchAll(/key:\s*"([a-z]+)"/g)].map((x) => x[1]);
@@ -23,7 +26,7 @@ function stepKeysInOrder(source) {
 }
 
 test("BASE_STEPS gains exactly one new required step, right after welcome", () => {
-  const keys = stepKeysInOrder(src);
+  const keys = stepKeysInOrder(stepsSrc);
   // Asserted as the PROPERTY this test is named for, not as a re-typed list of
   // every step: a closed set here would have to be edited by any unrelated step
   // change (it was — "discord"/Community joined the wizard the same day). The

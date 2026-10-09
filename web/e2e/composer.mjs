@@ -302,8 +302,17 @@ for (const theme of ["dark", "light"]) {
 
   // Preflight is OFF: `border` sets width only, so without `border-solid` the
   // computed style collapses to none/0px (divs) or a UA bevel (buttons).
+  //
+  // A bare `[role="dialog"]` is not unique here: with a fresh context (no
+  // localStorage) and onboarding mocked complete, App.jsx's one-time AI-config
+  // nudge (`aria-label="Complete AI configuration"`) is ALSO a `role="dialog"`
+  // and renders at the same time as this composer — `document.querySelector`
+  // grabs whichever is first in DOM order, which is the nudge, not the
+  // composer, so `d.querySelector("form textarea")` comes back null. Scope to
+  // this dialog's own aria-label (set at TaskComposer.jsx's `aria-label="New
+  // task"`) so it can't match the wrong dialog.
   const borders = await page.evaluate(() => {
-    const d = document.querySelector('[role="dialog"]');
+    const d = document.querySelector('[role="dialog"][aria-label="New task"]');
     const probe = (el) => { const c = getComputedStyle(el); return { w: c.borderTopWidth, s: c.borderTopStyle }; };
     return {
       card: probe(d),

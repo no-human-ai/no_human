@@ -1,4 +1,16 @@
 // Drawer regression guards (UI_AUDIT B3, B4, M3, M4 + the DA note's six risks).
+//
+// Three checks had fallen behind real app changes and are updated here:
+// (1) the P1 lazy-attempt-details API split (api.js `_hydrateAttemptDetails`)
+// moved review_checklist/verifier_results/test_results off the inline task
+// payload onto `/api/tasks/{id}/attempts/{n}/details`, which this walk's mock
+// never served, so every review-section check timed out waiting on an empty
+// state; (2) the Approve button's copy changed from "Approve" to "Approve and
+// merge" (operator directive 2026-08-12), and two checks still asserted the
+// old exact string; (3) the "ONE scroll region" redesign moved the scrolling
+// container from `.so-body` to `.so-scroll` (styles.css `.so-scroll`:
+// `overflow-y: auto`; `.so-body` is now a non-scrolling inner wrapper), so the
+// checks that measured `.so-body` ([D2a] and [M4+]) never saw an overflow.
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -72,6 +84,20 @@ const api = (task, opts = {}) => {
       : task;
     if (u.includes("/api/onboarding")) return j({ completed: true });
     if (u.includes("/api/projects")) return j([]);
+    // The P1 split (api.js `_hydrateAttemptDetails`) moved review_checklist /
+    // verifier_results / test_results off the inline task payload onto a
+    // lazy per-attempt endpoint — a mocked task that only sets those fields
+    // on task.attempts[n] (as every mock below does) now needs this route
+    // too, or the drawer's fetch silently 404s/degrades and every section
+    // that reads those fields renders its "no data yet" empty state instead.
+    if (u.match(/\/api\/tasks\/[^/]+\/attempts\/[^/]+\/details/)) {
+      const last = task.attempts?.[task.attempts.length - 1] || {};
+      return j({
+        review_checklist: last.review_checklist,
+        verifier_results: last.verifier_results,
+        test_results: last.test_results,
+      });
+    }
     if (u.match(/\/api\/tasks\/[^/]+\/diff/)) return j({ diff: "" });
     if (u.match(/\/api\/tasks\/[^/]+\/events/)) return j([]);
     if (u.match(/\/api\/tasks\/[^/]+$/)) return j(t);
@@ -270,7 +296,8 @@ const openSectionLabel = (page) =>
 {
   const { ctx, page } = await open(PARKED, { width: 390, height: 844 });
   const info = await page.evaluate(() => {
-    const body = document.querySelector(".so-body");
+    // `.so-scroll` is the drawer's one scroll region (see the header comment).
+    const body = document.querySelector(".so-scroll");
     const cs = getComputedStyle(body);
     const titles = [...document.querySelectorAll(".so-section-title")].map((n) => n.textContent.toLowerCase());
     return { overflowY: cs.overflowY, titles };
@@ -729,7 +756,11 @@ const UNGRADED_REVIEW = mkTask("oldrev00aaaabbbbcccc", "awaiting_approval", {
   const { ctx, page, errors } = await open(REVIEW);
   const btn = page.locator(".slideover .so-actions .btn-approve").first();
   const before = (await btn.innerText()).trim();
-  check("[D2] the action bar offers Approve", /^approve$/i.test(before), before);
+  // Copy changed (operator directive 2026-08-12, slideOverSummary.js
+  // approveButtonState "idle" branch): approve now merges the PR too, and
+  // the label says so — "Approve" alone predates that and never matches
+  // the built bundle again.
+  check("[D2] the action bar offers Approve", /^approve and merge$/i.test(before), before);
   await btn.click();
   await page.waitForTimeout(600);
   const after = (await btn.innerText()).trim();
@@ -789,7 +820,11 @@ const SCROLLING_REVIEW = mkTask("longrev0aaaabbbbcccc", "awaiting_approval", {
   // Open Details so the long description is actually laid out inside .so-body.
   await page.locator('.slideover .so-section-header:has(.so-section-title:text-is("Details"))').click();
   await page.waitForTimeout(600);
-  const body = page.locator(".slideover .so-body");
+  // The "ONE scroll region" redesign (SlideOver.jsx:566 comment) moved the
+  // scrolling container to `.so-scroll` — `.so-body` is just a non-scrolling
+  // inner wrapper for the accordion now, so it never overflows regardless of
+  // content length. Stale selector, not a real regression.
+  const body = page.locator(".slideover .so-scroll");
   const overflow = await body.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
   check("[D2a] the fixture's body genuinely overflows — the defect can manifest here",
     overflow.scroll > overflow.client,
@@ -885,7 +920,7 @@ const SENT_BACK_AFTER_APPROVAL = mkTask("resent00aaaabbbbcccc", "awaiting_approv
   const btn = page.locator(".slideover .so-actions .btn-approve").first();
   const label = (await btn.innerText()).trim();
   check("[D2b] an approval predating a send-back does not gate the NEW PR",
-    /^approve$/i.test(label) && !(await btn.isDisabled()), label);
+    /^approve and merge$/i.test(label) && !(await btn.isDisabled()), label);
   check("[D2b] no page errors", errors.length === 0, errors[0] || "");
   await ctx.close();
 }

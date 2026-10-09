@@ -32,6 +32,9 @@ import { forwardDisabled, canJumpTo } from "./onboardingNav.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "Onboarding.jsx"), "utf8");
 const css = readFileSync(join(here, "styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+// BASE_STEPS moved out of Onboarding.jsx into its own module (so an e2e walk
+// can import the real source of truth instead of hardcoding a rail length).
+const stepsSrc = readFileSync(join(here, "onboardingSteps.js"), "utf8");
 
 // ── isolate the step's own markup ────────────────────────────────────────
 const STEP = (() => {
@@ -44,7 +47,7 @@ const STEP = (() => {
 
 // ── AC1: reachable ───────────────────────────────────────────────────────
 test("BASE_STEPS carries a discord step directly before summary, which stays last", () => {
-  const base = src.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
+  const base = stepsSrc.match(/export const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(base, "the base-step list must still exist as its own array");
   const keys = [...base[1].matchAll(/key: "(\w+)"/g)].map((m) => m[1]);
   // Asserted as the PROPERTY this test is named for, not as a re-typed list of
