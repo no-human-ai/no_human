@@ -39,6 +39,22 @@ def test_full_urls_still_work_and_dedupe_against_shorthand():
     assert urls.count("https://github.com/o/r/pull/5") == 1
 
 
+def test_first_seen_order_across_mixed_full_and_shorthand():
+    # A shorthand ref mentioned BEFORE a full URL must stay first: callers use
+    # parse_pr_refs(...)[0] as the primary anchor (orchestrator
+    # ._run_code_review's single-URL comment/UI fields). Gathering every full
+    # URL ahead of every shorthand ref hoisted a later, secondary PR to the
+    # front; the result must follow the order the refs appear in the text.
+    text = (
+        "Primary: gitlab.acme.net grp/metrics MR !7006, "
+        "context in https://github.com/o/r/pull/3"
+    )
+    assert parse_pr_refs(text) == [
+        "https://gitlab.acme.net/grp/metrics/-/merge_requests/7006",
+        "https://github.com/o/r/pull/3",
+    ]
+
+
 def test_no_refs_returns_empty():
     assert parse_pr_refs("just review the code please") == []
     assert parse_pr_refs("") == []

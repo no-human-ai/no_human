@@ -39,22 +39,30 @@ def parse_pr_refs(text: str) -> list[str]:
     """
     if not text:
         return []
-    seen: set[str] = set()
-    out: list[str] = []
-
-    def _add(url: str) -> None:
-        if url not in seen:
-            seen.add(url)
-            out.append(url)
-
+    # Collect both forms WITH each match's position, then order by position, so
+    # the result is in true first-seen order rather than every full URL ahead
+    # of every shorthand ref. Callers treat the first element as the primary
+    # reference -- ``orchestrator._run_code_review`` anchors the review's
+    # single-URL fields (the comment target, the UI link) on
+    # ``parse_pr_refs(...)[0]`` -- so a task that names its primary PR as
+    # shorthand and a secondary one as a full URL later must not have that
+    # secondary URL hoisted to the front.
+    found: list[tuple[int, str]] = []
     for m in _FULL.finditer(text):
-        _add(m.group(0))
+        found.append((m.start(), m.group(0)))
     for m in _SHORT.finditer(text):
         host = m.group("host")
         path = m.group("path").rstrip("/")
         num = m.group("num")
         if m.group("mr"):
-            _add(f"https://{host}/{path}/-/merge_requests/{num}")
+            found.append((m.start(), f"https://{host}/{path}/-/merge_requests/{num}"))
         else:
-            _add(f"https://{host}/{path}/pull/{num}")
+            found.append((m.start(), f"https://{host}/{path}/pull/{num}"))
+    found.sort(key=lambda pair: pair[0])
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, url in found:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
     return out
