@@ -113,9 +113,9 @@ export function launchReadiness({ projects, selectedRepos, deferred = [] }) {
   const repos = selectedRepos && typeof selectedRepos.size === "number"
     ? selectedRepos.size : (selectedRepos ? selectedRepos.length : 0);
   const rows = [
-    { step: "repos", jumpTo: 1, ok: repos > 0,
+    { step: "repos", jumpTo: 2, ok: repos > 0,
       message: repos > 0 ? "" : "Pick at least one repository." },
-    { step: "projects", jumpTo: 2, ok: projectsBlockContinue(projects) === null,
+    { step: "projects", jumpTo: 3, ok: projectsBlockContinue(projects) === null,
       message: projectsBlockContinue(projects) || "" },
   ];
   return rows.filter((r) => !deferred.includes(r.step));
