@@ -56,6 +56,18 @@ def test_queued():
     assert result.status == PipelineStatus.RUNNING
 
 
+@pytest.mark.parametrize("status", ["waiting", "requested", "pending"])
+def test_github_actions_in_progress_statuses_are_running(status):
+    # GitHub Actions can set waiting/requested/pending on a check run that has
+    # not completed (e.g. a job held at a deployment environment protection
+    # rule, or awaiting a concurrency slot). These must read as RUNNING so the
+    # poll loop keeps waiting, not as an indeterminate UNKNOWN that trigger()
+    # returns immediately as a no-verdict.
+    result = check_runs_to_result([_run("deploy", status=status)], ref="abc123")
+    assert result.status == PipelineStatus.RUNNING
+    assert not result.status.is_terminal
+
+
 def test_empty_runs():
     result = check_runs_to_result([], ref="abc123")
     assert result.status == PipelineStatus.UNKNOWN

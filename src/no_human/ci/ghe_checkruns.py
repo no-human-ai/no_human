@@ -33,6 +33,19 @@ _CONCLUSION_MAP: dict[str, PipelineStatus] = {
 }
 
 
+# GitHub reports a not-yet-completed check run with one of these statuses.
+# "queued"/"in_progress" are the common two; "waiting", "requested" and
+# "pending" are set ONLY by GitHub Actions (REST "Update a check run": "Only
+# GitHub Actions can set a status of waiting, pending, or requested") -- e.g.
+# a job held at a deployment environment protection rule, or awaiting a
+# concurrency slot. All five mean the run is still going, so the poll loop
+# must keep waiting rather than read the run as an indeterminate no-verdict
+# (UNKNOWN) and give up on CI that is genuinely in progress.
+_IN_PROGRESS_CHECK_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "requested", "pending"}
+)
+
+
 # The env key a human must set to clear an access wall. GitHub's CLI reads this.
 _ACCESS_ENV_KEY = "GH_TOKEN"
 
@@ -265,7 +278,7 @@ def check_runs_to_result(
         status = (cr.get("status") or "").lower()
         web_url = cr.get("html_url", "")
 
-        if status in ("queued", "in_progress"):
+        if status in _IN_PROGRESS_CHECK_STATUSES:
             any_in_progress = True
             jobs.append(JobResult(name=name, status="running", web_url=web_url))
             continue
