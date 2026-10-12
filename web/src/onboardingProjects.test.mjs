@@ -283,9 +283,17 @@ test("projectsBlockContinue reads Set-shaped repos too (the wizard's live state)
   assert.equal(projectsBlockContinue([{ name: "K", repos: new Set(["/r"]) }]), null);
 });
 
-test("launch readiness lists each failing step with a jump index", () => {
-  const rows = launchReadiness({ projects: [{ name: "Kika", repos: [] }], selectedRepos: new Set(["/r"]), deferred: [] });
-  assert.deepEqual(rows.filter((r) => !r.ok).map((r) => r.jumpTo), [2]);
+test("launch readiness uses the correct wizard step indexes", () => {
+  const rows = launchReadiness({
+    projects: [{ name: "Kika", repos: [] }],
+    selectedRepos: new Set(),
+    deferred: [],
+  });
+
+  assert.deepEqual(
+    rows.filter((r) => !r.ok).map((r) => r.jumpTo),
+    [2, 3]
+  );
 });
 
 test("launch readiness is all-clear when repos are picked and no project is empty", () => {
