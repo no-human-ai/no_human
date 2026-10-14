@@ -22,7 +22,14 @@ def title_short(title: str, limit: int = 60) -> str:
     # only trims the string's very edges, missing a closing mark mid-string.
     if t and t[0] in _QUOTES:
         end = t.find(t[0], 1)
-        if end > 0:
+        # Unwrap a quoted leading TOKEN (`path/like/this`) or a fully
+        # wrapped title, but NOT a quoted phrase that has text after it:
+        # if the closing mark sits mid-string with whitespace inside the
+        # span, stripping the pair would delete a quote from mid-text, so
+        # a title like '"Fix the bug," said the reviewer' lost its inner
+        # quote and read as if nothing was quoted at all.
+        if end > 0 and (end == len(t) - 1
+                        or not any(c.isspace() for c in t[1:end])):
             t = t[1:end] + t[end + 1 :]
     t = t.strip()
     if len(t) <= limit:

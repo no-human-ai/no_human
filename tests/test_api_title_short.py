@@ -27,3 +27,11 @@ def test_empty_title_stays_empty():
 
 def test_short_title_with_colon_is_returned_unchanged():
     assert title_short("Fix: login redirect loop") == "Fix: login redirect loop"
+
+
+def test_quoted_phrase_with_trailing_text_keeps_its_quotes():
+    # The leading-token unwrap must not corrupt a quoted phrase that has
+    # text after the closing mark: stripping the pair deleted the inner
+    # quote, so the title read as if nothing had been quoted at all.
+    t = '"Fix the bug," said the reviewer'
+    assert title_short(t) == '"Fix the bug," said the reviewer'
