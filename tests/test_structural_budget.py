@@ -2556,7 +2556,12 @@ FROZEN_FILE_LINES = {
     # the older of the two readings plus the poll interval reaches
     # `_LEASE_REFRESH_TOLERANCE_S` (= `_HEARTBEAT_STALE_S` / 2), or at once
     # with no landed write. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3367,
+    # 3367 -> 3372 (+5): `tick`'s dispatch loop now counts only tasks that
+    # actually START against the free slots and iterates past a
+    # `_shipped_before_dispatch` skip, so a shipped task near the queue head no
+    # longer consumes a slot's iteration budget and idles a worker for the tick.
+    # Measured on this tree with the scanner below.
+    "core/scheduler.py": 3372,
 }
 
 

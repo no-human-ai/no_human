@@ -173,3 +173,39 @@ async def test_terminal_during_probe_does_not_dispatch_or_rewrite(store, tmp_pat
     # Exactly one DONE write (the probe's own), not a second one from the gate.
     shipped_events = [e for e in events if e.get("kind") == "shipped"]
     assert len(shipped_events) == 1
+
+
+async def test_a_shipped_task_at_the_queue_head_does_not_idle_the_slot(store, tmp_path):
+    # Regression: with one free slot and two claimable tasks where the FIRST is
+    # already shipped, the shipped task is completed WITHOUT consuming the slot,
+    # so the second (live) task fills it THIS tick. The pre-fix loop iterated
+    # only `claimable[:slots]`, so the shipped head used up the single slot's
+    # iteration and the live task waited a whole tick behind an idle worker.
+    shipped = Task.new("already shipped", repo_path=str(tmp_path))
+    shipped.context = {"pr_branch": "nh/shipped-1", "base_branch": "main",
+                       "pr_watch": "https://github.com/o/r/pull/1",
+                       "resume_from": {"sha": "abc", "by": "orphan_recovery"}}
+    await store.create_task(shipped)
+    await store.set_status(shipped, TaskStatus.IMPLEMENTING, validate=False)
+
+    live = Task.new("still running", repo_path=str(tmp_path))
+    live.context = {"pr_branch": "nh/live-1", "base_branch": "main",
+                    "pr_watch": "https://github.com/o/r/pull/2",
+                    "resume_from": {"sha": "def", "by": "orphan_recovery"}}
+    await store.create_task(live)
+    await store.set_status(live, TaskStatus.IMPLEMENTING, validate=False)
+
+    async def probe(repo_path, branch, base):
+        return branch == "nh/shipped-1"   # only the first task's content landed
+
+    fake = FakeOrch()
+    sched = Scheduler(store, lambda task=None: fake, max_workers=1,
+                       wake_watcher=_make_wake(probe))
+
+    started = await sched.tick()
+    await asyncio.sleep(0)               # let the live task's _run start
+
+    assert started == [live.id]          # the one free slot went to the live task
+    assert fake.started == [live.id]
+    assert (await store.get_task(shipped.id)).status is TaskStatus.DONE
+    assert (await store.get_task(live.id)).status is not TaskStatus.DONE

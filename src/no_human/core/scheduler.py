@@ -2395,7 +2395,12 @@ class Scheduler:
         claimable = await self._claimable()
         self._last_claimable_count = len(claimable)
         if slots > 0:
-            for task in claimable[:slots]:
+            # Count only tasks that actually START against the free slots: a
+            # `_shipped_before_dispatch` skip completes the task without taking a
+            # slot, so step past it instead of letting it idle a worker this tick.
+            for task in claimable:
+                if len(started) >= slots:
+                    break
                 if await self._shipped_before_dispatch(task):
                     continue                      # completed; no attempt starts
                 self._inflight.add(task.id)      # reserve BEFORE scheduling
