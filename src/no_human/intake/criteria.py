@@ -14,7 +14,7 @@ log = logging.getLogger("no_human.intake.criteria")
 # two spellings disagreeing is how `##Notes` came to be a closer in one place
 # and not the other.
 _HEADING = re.compile(r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<title>.*?)\s*#*\s*$")
-_FENCE = re.compile(r"^\s*(?:```|~~~)")
+_FENCE = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})")
 
 # The heading TEXT only has to start with the phrase: "Acceptance criteria
 # (recorded API fixtures)" and "Acceptance criteria:" are both ordinary here.
@@ -41,12 +41,24 @@ def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
     items and end early.
     """
     out: list[tuple[int, str]] = []
-    fenced = False
+    # The MARKER type that opened the current block (`` ` `` or ``~``), or
+    # None outside any block. A fence only closes with its OWN marker type:
+    # a ``~~~`` line inside a ```` ``` ```` block (a diff or transcript in an
+    # issue body) is content, not a closer, so toggling on either spelling
+    # wrongly ended the block and flipped which lines read as visible.
+    open_marker: str | None = None
     for index, line in enumerate(lines):
-        if _FENCE.match(line):
-            fenced = not fenced
-            continue
-        if not fenced:
+        fence = _FENCE.match(line)
+        if fence:
+            marker = fence.group("marker")[0]
+            if open_marker is None:
+                open_marker = marker        # a fence opens the block
+                continue
+            if marker == open_marker:
+                open_marker = None          # a same-type fence closes it
+                continue
+            # a different-marker fence line is just block content -> hidden
+        if open_marker is None:
             out.append((index, line))
     return out
 

@@ -100,6 +100,25 @@ def test_a_fenced_block_inside_the_section_is_not_criteria():
     assert extract(body) == ["a real criterion", "another real one"]
 
 
+def test_a_different_fence_marker_inside_a_block_does_not_close_it():
+    r"""A ``~~~`` line inside a ```` ``` ```` block (or vice versa) is block
+    content, not a closing fence. Toggling on either spelling ended the
+    block early, so a junk bullet inside it was read as a criterion AND the
+    real criterion after it was hidden inside the phantom-reopened block.
+    """
+    body = (
+        "## Acceptance criteria\n"
+        "```\n"
+        "example transcript:\n"
+        "~~~\n"
+        "- junk bullet inside the code block\n"
+        "```\n"
+        "\n"
+        "- [ ] the real criterion\n"
+    )
+    assert extract(body) == ["the real criterion"]
+
+
 def test_a_following_heading_of_the_same_level_ends_the_section():
     body = "## Acceptance criteria\n- mine\n## Notes\n- not mine\n"
     assert extract(body) == ["mine"]
