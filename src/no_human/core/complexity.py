@@ -110,7 +110,8 @@ def trivial_paths(paths: list[str], *, max_files: int = MAX_TRIVIAL_FILES) -> bo
     if not seen or len(seen) > max_files:
         return False
     return all(
-        p.lower().endswith(_PROSE_SUFFIXES) and not p.startswith(_EXECUTED_ROOTS)
+        p.lower().endswith(_PROSE_SUFFIXES)
+        and not p.lower().startswith(_EXECUTED_ROOTS)
         for p in seen
     )
 
@@ -168,7 +169,7 @@ def review_must_be_unbounded(paths: list[str]) -> bool:
              for rel in Orchestrator._REPO_INSTRUCTION_FILES}
     names.update(n.casefold() for n in _GATE_CONTROL_NAMES)
     return any(
-        p.startswith(_INSTRUCTION_ROOTS)
+        p.lower().startswith(_INSTRUCTION_ROOTS)
         or p.rsplit("/", 1)[-1].casefold() in names
         for p in (_normalize(q) for q in paths)
     )

@@ -102,6 +102,10 @@ def test_prose_file_sets_are_trivial(paths):
     (["pyproject.toml"], "config, not prose"),
     (["Makefile"], "no recognised suffix"),
     ([], "nothing named at all"),
+    (["SRC/notes.md"], "executed root spelled uppercase (same file on a "
+                       "case-insensitive volume as src/)"),
+    (["Tests/README.md"], "executed root, capitalized"),
+    ([".Claude/skills/x/SKILL.md"], "agent-runtime prose, capitalized root"),
 ])
 def test_non_prose_or_oversized_file_sets_are_not_trivial(paths, why):
     assert trivial_paths(paths) is False, why
@@ -451,6 +455,9 @@ def test_review_must_be_unbounded_covers_instructions_and_gate_control():
     assert review_must_be_unbounded([".agents/reviewer.md"]) is True
     assert review_must_be_unbounded(["./.agents/x.md"]) is True
     assert review_must_be_unbounded(["docs/adapters.md", ".agents/x.md"]) is True
+    # The `.agents/` root is folded too, like the basenames below: on a
+    # case-insensitive volume `.Agents/x.md` IS the same agent definition.
+    assert review_must_be_unbounded([".Agents/reviewer.md"]) is True
     # F1: the files holding "The agent never merges".
     assert review_must_be_unbounded(["CLAUDE.md"]) is True
     assert review_must_be_unbounded(["docs/CLAUDE.md"]) is True
