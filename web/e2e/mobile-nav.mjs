@@ -2,19 +2,6 @@
 // Playwright's .click() scrolls a target into view programmatically, so a click
 // test alone passes even when the button renders off-screen — this asserts on
 // geometry (rect.right <= innerWidth), which is what a human's thumb sees.
-//
-// QUARANTINED (lane: manual — see e2e/manifest.mjs): 4 of ~100 checks fail —
-// "no nav label is clipped" at the two narrowest viewports (small, mobile-short;
-// both themes) — always the SAME label, always the SAME 2px: `In progress
-// 64>62`. Real CSS regression, not a walk bug: src/styles.css:379 gives
-// `.nh-navrow-label` `flex: 1; min-width: 0` so it shrinks and ellipsizes, but
-// the narrow-viewport override at src/styles.css:627 sets `flex: 0 0 auto;
-// max-width: 100%` — `flex-basis: auto` sizes the label to its own content
-// instead of the available track, so at these widths it overflows its box
-// before the `text-overflow: ellipsis` rule ever gets a chance to fire. Fixing
-// it is an application CSS change, outside the change that wired these walks
-// into CI; this walk stays red on that one defect until the narrow-viewport override
-// keeps `min-width: 0` (or drops `flex: 0 0 auto` back to `flex: 1`).
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -46,6 +33,8 @@ for (const [label, viewport] of [
   // max-height block — the exact overlap where a specificity leak between
   // them would show up (a phone is always also a "short" viewport).
   ["mobile-short", { width: 360, height: 700 }],
+  // A fold-phone cover screen: the narrowest the nav must still fit in full.
+  ["narrow", { width: 280, height: 653 }],
   ["desktop", { width: 1440, height: 900 }],
 ]) {
   for (const theme of ["dark", "light"]) {
@@ -107,6 +96,19 @@ for (const [label, viewport] of [
         clippedLabels: [...document.querySelectorAll(".nh-navrow-label")]
           .filter((l) => l.scrollWidth > l.clientWidth + 1)
           .map((l) => `${l.textContent.trim()} ${l.scrollWidth}>${l.clientWidth}`),
+        labelLayout: [...document.querySelectorAll(".nh-navrow-label")].map((l) => {
+          const lr = l.getBoundingClientRect();
+          const rr = l.closest(".nh-navrow").getBoundingClientRect();
+          const cs = getComputedStyle(l);
+          return {
+            text: l.textContent.trim(),
+            insideRow: lr.left >= rr.left - 0.5 && lr.right <= rr.right + 0.5,
+            ellipsis: cs.textOverflow === "ellipsis" && cs.overflowX === "hidden" && cs.whiteSpace === "nowrap",
+            // A stretched label is taller than the one line box it holds.
+            boxHeight: lr.height,
+            lineHeight: parseFloat(cs.lineHeight),
+          };
+        }),
       };
     });
 
@@ -145,6 +147,27 @@ for (const [label, viewport] of [
         `[${label}/${theme}] no nav label is clipped`,
         geom.clippedLabels.length === 0,
         geom.clippedLabels.join(", "),
+      );
+      const outside = geom.labelLayout.filter((l) => !l.insideRow);
+      check(
+        `[${label}/${theme}] every nav label stays inside its own row`,
+        outside.length === 0,
+        outside.map((l) => l.text).join(", "),
+      );
+      // Every label fits at these widths, so this checks the fallback for a
+      // screen narrower still is in place, not that it fired.
+      const hardCut = geom.labelLayout.filter((l) => !l.ellipsis);
+      check(
+        `[${label}/${theme}] a nav label too long for its row would end in an ellipsis, never a hard cut`,
+        hardCut.length === 0,
+        hardCut.map((l) => l.text).join(", "),
+      );
+      // `!(<=)` rather than `>` so a non-numeric line-height (NaN) fails loudly.
+      const stretched = geom.labelLayout.filter((l) => !(l.boxHeight <= l.lineHeight + 1));
+      check(
+        `[${label}/${theme}] no nav label is stretched vertically past its line of text`,
+        stretched.length === 0,
+        stretched.map((l) => `${l.text} ${l.boxHeight.toFixed(1)}>${l.lineHeight}`).join(", "),
       );
     }
     check(`[${label}/${theme}] theme toggle is on screen`, geom.toggleOnScreen !== false);

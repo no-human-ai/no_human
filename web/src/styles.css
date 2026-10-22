@@ -611,19 +611,26 @@ html, body, #root {
      page a row goes to — is still carried by the icon+label itself). */
   .nh-navgroup, .nh-navgroup-rows { display: contents; }
   .nh-navgroup-title { display: none; }
-  /* Equal columns, icon over label — the phone tab-bar shape. `flex: 1 1 0` +
-     `min-width: 0` is what guarantees the fit: the rows always divide the line,
-     and a long label ellipsises inside its own column instead of widening the
-     strip. The label is never dropped — an icon-only nav row is not a thing
-     this product renders (see NavRow in App.jsx). */
+  /* Icon over label — the phone tab-bar shape. `min-width: 0` + shrink is what
+     guarantees the fit: the rows always divide the line, and a long label
+     ellipsises inside its own column instead of widening the strip. The label
+     is never dropped — an icon-only nav row is not a thing this product
+     renders (see NavRow in App.jsx).
+     `flex-basis: auto`, not 0: equal columns gave "In progress" 61.6px of the
+     64px it needs at 360px, so the default page's active tab read "In progre…"
+     (#660). Sizing each column to its label plus an equal share of the slack
+     fits every label in full down to a 280px screen, at the 12px type floor. */
   .nh-navrow {
-    flex: 1 1 0; min-width: 0; width: auto;
+    flex: 1 1 auto; min-width: 0; width: auto;
     flex-direction: column; align-items: center; justify-content: center;
     gap: 2px; padding: 6px 2px;
     font-size: 12px; letter-spacing: 0; text-align: center;
   }
   /* The base rule's `flex: 1` stretches the label VERTICALLY once the row is a
-     column — it must size to its text and truncate horizontally instead. */
+     column — it must size to its text and truncate horizontally instead. In a
+     column the label's width is the CROSS axis, so flex/min-width no longer
+     bound it; `max-width: 100%` is what caps it to the row so the base rule's
+     ellipsis can fire on a phone too narrow for the full label. */
   .nh-navrow-label { flex: 0 0 auto; max-width: 100%; }
   /* Row counts are secondary on a phone-width nav — they're still visible on
      the Board/Done/Failed pages themselves once tapped in. Dropping them here

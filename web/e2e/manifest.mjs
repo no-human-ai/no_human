@@ -25,15 +25,7 @@ export const WALKS = [
   { file: "backlog-queue.mjs", name: "backlog queue", lane: "ci" },
   { file: "form-order.mjs", name: "form order", lane: "ci" },
   { file: "outcomes.mjs", name: "outcomes (3-lane board)", lane: "ci" },
-  { file: "mobile-nav.mjs", name: "mobile nav", lane: "manual", reason:
-    "Quarantined on an app CSS defect: 4 checks fail - 'no nav label is " +
-    "clipped' at the two narrowest viewports (small, mobile-short; both " +
-    "themes), always 'In progress 64>62'. src/styles.css:379 gives " +
-    ".nh-navrow-label 'flex: 1; min-width: 0' (shrink + ellipsize), but the " +
-    "narrow-viewport override at src/styles.css:627 sets 'flex: 0 0 auto; " +
-    "max-width: 100%', so the label is sized to its own content and overflows " +
-    "before the ellipsis can apply. Fixing it is an application CSS change, " +
-    "outside this lane wiring." },
+  { file: "mobile-nav.mjs", name: "mobile nav", lane: "ci" },
   { file: "onboarding-a11y.mjs", name: "onboarding a11y", lane: "ci" },
   { file: "onboarding-consent-step.mjs", name: "onboarding consent step", lane: "ci" },
   { file: "onboarding-summary-counts.mjs", name: "onboarding summary counts", lane: "manual", reason:

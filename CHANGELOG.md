@@ -7,6 +7,15 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **The phone-width nav no longer cuts "In progress" to "In progre…".** The
+  nav split a phone's width into equal columns, and on a 360px screen that
+  gave "In progress" 61.6px of the 64px it needs, so the board's own tab
+  ellipsised on the most common Android width. Each tab is now sized to its
+  label plus an equal share of the spare width, so every label fits in full
+  at 12px down to a 280px screen; a narrower one still ellipsises inside its
+  own tab. The `mobile-nav` e2e walk, which caught this, is back in the `ci`
+  lane, and it now also checks that a label stays inside its tab, can only
+  truncate with an ellipsis, and is never stretched vertically (#660).
 - **A grill "done" response with null/empty acceptance criteria now warns
   instead of proceeding silently.** `parse_grill_response` and the
   force-finish branch in `grill_step` both route through one
