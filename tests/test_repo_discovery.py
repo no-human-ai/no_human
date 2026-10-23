@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -431,21 +432,37 @@ def test_the_untracked_pass_stops_at_a_shared_budget(tmp_path, monkeypatch):
     checkouts, which is exactly the machine where discovery matters most. The
     untracked pass gets ONE budget for the whole scan; repos it does not reach
     come back partial instead of extending the wait.
+
+    The clock is fake and only moves inside the expensive probe, so the cheap
+    pass always fits the budget however loaded the machine is (#662).
     """
     for i in range(12):
         _real_repo(tmp_path / "git" / f"r{i:02d}")
 
+    now = [0.0]
+    lock = threading.Lock()
+
+    class _FakeTime:
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def monotonic(self):
+            with lock:
+                return now[0]
+
     seen: list[str] = []
 
     def slow(path, untracked, timeout):
-        seen.append(untracked)
-        if untracked == "no":
-            return ""          # tracked files clean
-        time.sleep(0.2)
+        with lock:
+            seen.append(untracked)
+            if untracked == "no":
+                return ""      # tracked files clean
+            now[0] += 1.0      # one expensive probe spends the whole budget
         return None            # the expensive pass never answers
 
+    monkeypatch.setattr(repo_discovery, "time", _FakeTime())
     monkeypatch.setattr(repo_discovery, "_git_status", slow)
-    monkeypatch.setattr(repo_discovery, "DIRTY_BUDGET_S", 0.05)
+    monkeypatch.setattr(repo_discovery, "DIRTY_BUDGET_S", 1.0)
 
     res = discover_repos(home=tmp_path)
     assert seen.count("no") == 12, "every repo still gets the cheap probe"
