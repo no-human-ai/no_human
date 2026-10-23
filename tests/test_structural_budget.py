@@ -1773,7 +1773,10 @@ FROZEN_FILE_LINES = {
     # CHANGELOG.md, exits non-zero when any are found) plus a non-blocking
     # note in `_approve_go_landed` naming it when the landed commit is such a
     # gap in a repo that opts in. Measured with `scan_tree` on this tree.
-    "cli/commands.py": 9323,
+    # 9323 -> 9329 (+6): #656 calls `close_draft_pr_on_cancel` from `nh
+    # unblock --fail`, so a parked task failed by hand has its outstanding
+    # draft PR retitled and closed. Measured with `scan_tree` on this tree.
+    "cli/commands.py": 9329,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

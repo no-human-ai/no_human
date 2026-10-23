@@ -5074,6 +5074,12 @@ def unblock(task_id, fail):
                     "unblock", prior_status=prior_status, prior_blocker=prior_blocker,
                     actor="cli"),
             )
+            if target is TaskStatus.FAILED:
+                # The blocker funnel keeps a PARKED task's draft open because it
+                # may resume; failing it here is the point it can't, so close it.
+                from ..blockers import close_draft_pr_on_cancel
+                await close_draft_pr_on_cancel(
+                    store, t, reason="abandoned by nh unblock --fail", config=config)
             console.print(f"[green]{t.id[:8]} -> {target.value}[/]")
 
     asyncio.run(_go())
