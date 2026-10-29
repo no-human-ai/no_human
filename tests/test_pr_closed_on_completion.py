@@ -6,13 +6,16 @@ landed-completion rungs (`blockers/shipped.py`) wrote DONE and walked away,
 leaving the PR open forever.
 
 `blockers/pr_closeout.close_task_prs_on_completion` is the shared hook both
-now call right after the DONE write. These tests drive all three completion
-paths end to end against a real `Store`, with a `FakeForge` standing in for
-the network close (injected via `close=` for the direct unit tests, and via
-`monkeypatch.setattr(no_human.vcs.comment_poster, "close_pr", ...)` for the
-tests that drive `approve_landed_override`/`complete_if_content_landed`
-directly, which do not thread a `close=` parameter through) — so nothing
-here touches a network or needs credentials.
+now call right after the DONE write. Per #658 it LEAVES the task's landed
+(resolved) PR open — closing it would read as Closed, not Merged, and cannot
+be undone — and closes only the task's SUPERSEDED earlier-attempt PRs. These
+tests drive all three completion paths end to end against a real `Store`,
+with a `FakeForge` standing in for the network close (injected via `close=`
+for the direct unit tests, and via `monkeypatch.setattr(
+no_human.vcs.comment_poster, "close_pr", ...)` for the tests that drive
+`approve_landed_override`/`complete_if_content_landed` directly, which do not
+thread a `close=` parameter through) — so nothing here touches a network or
+needs credentials.
 """
 
 from __future__ import annotations
@@ -24,7 +27,9 @@ import pytest
 
 from no_human.blockers.landed_override import approve_landed_override
 from no_human.blockers.pr_closeout import (
-    PR_CLOSED_ON_COMPLETION_KIND, close_task_prs_on_completion,
+    PR_CLOSED_ON_COMPLETION_KIND,
+    PR_LEFT_OPEN_ON_COMPLETION_KIND,
+    close_task_prs_on_completion,
 )
 from no_human.blockers.shipped import (
     complete_if_approved_and_landed, complete_if_content_landed,
@@ -89,9 +94,24 @@ async def _seed_awaiting(store, repo_path, *, url, base_branch="main",
     return t
 
 
+async def _add_superseded_pr(store, task, url):
+    """Record a second PR on the task (an earlier attempt's draft) that
+    `resolve_task_pr` does NOT return as the current one, so it reads as a
+    superseded PR to the completion closeout."""
+    await store.save_events(task.id, [{
+        "source": "system", "kind": "pr_draft", "pr_url": url,
+        "ts": time.time(), "text": url,
+    }])
+
+
 async def _pr_closed_events(store, task_id):
     events = await store.list_events(task_id)
     return [e for e in events if e["kind"] == PR_CLOSED_ON_COMPLETION_KIND]
+
+
+async def _pr_left_open_events(store, task_id):
+    events = await store.list_events(task_id)
+    return [e for e in events if e["kind"] == PR_LEFT_OPEN_ON_COMPLETION_KIND]
 
 
 def _always_false_is_terminal():
@@ -101,10 +121,10 @@ def _always_false_is_terminal():
 
 
 # --------------------------------------------------------------------------- #
-# --landed override                                                           #
+# --landed override: the landed PR is LEFT OPEN (#658)                        #
 # --------------------------------------------------------------------------- #
 
-async def test_landed_override_closes_open_pr_and_records_event(
+async def test_landed_override_leaves_landed_pr_open_and_records_event(
     tmp_path, store, monkeypatch,
 ):
     repo = _make_repo(tmp_path)
@@ -119,22 +139,24 @@ async def test_landed_override_closes_open_pr_and_records_event(
 
     fresh = await store.get_task(t.id)
     assert fresh.status is TaskStatus.DONE
-    assert forge.state[url] == "closed"
+    # The landed PR must NOT be closed -- closing it reads as Closed, not Merged.
+    assert forge.state[url] == "open"
+    assert forge.closes == []
+    assert await _pr_closed_events(store, t.id) == []
 
-    events = await _pr_closed_events(store, t.id)
-    assert len(events) == 1
-    ev = events[0]
+    left = await _pr_left_open_events(store, t.id)
+    assert len(left) == 1
+    ev = left[0]
     assert ev["task_id"] == t.id
     assert ev["pr_id"] == url
-    assert ev["closed_timestamp"]
     assert ev["completion_path"] == "approved_landed_override"
 
 
 # --------------------------------------------------------------------------- #
-# shipped-completion                                                          #
+# shipped-completion: landed PR left open                                     #
 # --------------------------------------------------------------------------- #
 
-async def test_shipped_completion_closes_open_pr_and_records_event(
+async def test_shipped_completion_leaves_landed_pr_open_and_records_event(
     tmp_path, store, monkeypatch,
 ):
     url = "https://github.com/o/r/pull/382"
@@ -150,12 +172,11 @@ async def test_shipped_completion_closes_open_pr_and_records_event(
     async def fake_pr_shipped(repo_path, branch, base):
         return True
 
-    events_seen = []
     result = await complete_if_content_landed(
         store, t, url,
         pr_shipped=fake_pr_shipped,
         is_terminal=_always_false_is_terminal(),
-        on_event=lambda kind, text: events_seen.append((kind, text)),
+        on_event=lambda kind, text: None,
         forge_state="CLOSED", action="shipped",
         situation="was closed",
     )
@@ -163,20 +184,21 @@ async def test_shipped_completion_closes_open_pr_and_records_event(
     assert result == "shipped"
     fresh = await store.get_task(t.id)
     assert fresh.status is TaskStatus.DONE
-    assert forge.state[url] == "closed"
+    assert forge.state[url] == "open"
+    assert forge.closes == []
+    assert await _pr_closed_events(store, t.id) == []
 
-    events = await _pr_closed_events(store, t.id)
-    assert len(events) == 1
-    assert events[0]["completion_path"] == "shipped"
-    assert events[0]["pr_id"] == url
-    assert events[0]["task_id"] == t.id
+    left = await _pr_left_open_events(store, t.id)
+    assert len(left) == 1
+    assert left[0]["completion_path"] == "shipped"
+    assert left[0]["pr_id"] == url
 
 
 # --------------------------------------------------------------------------- #
-# containment landed-completion (approve path, no merge)                      #
+# containment landed-completion (approve path, no merge): landed PR left open  #
 # --------------------------------------------------------------------------- #
 
-async def test_approved_landed_completion_closes_open_pr_and_records_event(
+async def test_approved_landed_completion_leaves_landed_pr_open_and_records_event(
     tmp_path, store, monkeypatch,
 ):
     url = "https://github.com/o/r/pull/375"
@@ -200,41 +222,43 @@ async def test_approved_landed_completion_closes_open_pr_and_records_event(
     assert result == "approved_landed"
     fresh = await store.get_task(t.id)
     assert fresh.status is TaskStatus.DONE
-    assert forge.state[url] == "closed"
+    assert forge.state[url] == "open"
+    assert forge.closes == []
 
-    events = await _pr_closed_events(store, t.id)
-    assert len(events) == 1
-    assert events[0]["completion_path"] == "approved_landed"
-    assert events[0]["pr_id"] == url
+    left = await _pr_left_open_events(store, t.id)
+    assert len(left) == 1
+    assert left[0]["completion_path"] == "approved_landed"
+    assert left[0]["pr_id"] == url
 
 
 # --------------------------------------------------------------------------- #
-# every open PR of the task closes, not just the resolved one                 #
+# the landed PR is left open; a SUPERSEDED earlier-attempt PR still closes     #
 # --------------------------------------------------------------------------- #
 
-async def test_all_task_prs_close_not_just_the_resolved_one(
+async def test_superseded_prs_close_but_the_landed_one_is_left_open(
     tmp_path, store, monkeypatch,
 ):
     repo = _make_repo(tmp_path)
     sha = _git_out(repo, "rev-parse", "HEAD")
-    url_a = "https://github.com/o/r/pull/1"
-    url_b = "https://github.com/o/r/pull/2"
-    forge = FakeForge(**{url_a: "open", url_b: "open"})
+    url_landed = "https://github.com/o/r/pull/1"     # resolved -> pr_watch
+    url_superseded = "https://github.com/o/r/pull/2"  # an earlier attempt's draft
+    forge = FakeForge(**{url_landed: "open", url_superseded: "open"})
     monkeypatch.setattr(comment_poster, "close_pr", forge.close_pr)
 
-    t = await _seed_awaiting(store, repo, url=url_a, pr_branch="")
-    await store.save_events(t.id, [{
-        "source": "system", "kind": "pr_draft", "pr_url": url_b,
-        "ts": time.time(), "text": url_b,
-    }])
+    t = await _seed_awaiting(store, repo, url=url_landed, pr_branch="")
+    await _add_superseded_pr(store, t, url_superseded)
 
-    await approve_landed_override(store, t, sha, "closing both")
+    await approve_landed_override(store, t, sha, "land one, supersede the other")
 
-    assert forge.state[url_a] == "closed"
-    assert forge.state[url_b] == "closed"
-    events = await _pr_closed_events(store, t.id)
-    assert {e["pr_id"] for e in events} == {url_a, url_b}
-    assert len(events) == 2
+    # The landed PR stays open; the superseded one is closed.
+    assert forge.state[url_landed] == "open"
+    assert forge.state[url_superseded] == "closed"
+    assert forge.closes == [url_superseded]
+
+    closed = await _pr_closed_events(store, t.id)
+    assert {e["pr_id"] for e in closed} == {url_superseded}
+    left = await _pr_left_open_events(store, t.id)
+    assert {e["pr_id"] for e in left} == {url_landed}
 
 
 # --------------------------------------------------------------------------- #
@@ -254,9 +278,12 @@ async def test_other_tasks_pr_is_never_touched(tmp_path, store, monkeypatch):
 
     await approve_landed_override(store, task_a1, sha, "task A completes")
 
-    assert forge.state[url_a1] == "closed"
+    # task A's landed PR is left open (not closed); task B is untouched.
+    assert forge.state[url_a1] == "open"
     assert forge.state[url_b1] == "open"
+    assert url_b1 not in forge.closes
     assert await _pr_closed_events(store, task_b1.id) == []
+    assert await _pr_left_open_events(store, task_b1.id) == []
 
     url_a2 = "https://github.com/o/r/pull/12"
     url_b2 = "https://github.com/o/r/pull/13"
@@ -280,7 +307,7 @@ async def test_other_tasks_pr_is_never_touched(tmp_path, store, monkeypatch):
         forge_state="CLOSED", action="shipped", situation="was closed",
     )
 
-    assert forge.state[url_a2] == "closed"
+    assert forge.state[url_a2] == "open"
     assert forge.state[url_b2] == "open"
     assert await _pr_closed_events(store, task_b2.id) == []
 
@@ -324,13 +351,14 @@ def test_merge_path_close_behavior_unchanged(land_env, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# bare close: no comment is ever posted                                       #
+# bare close: no comment is ever posted (on the superseded PR that is closed)  #
 # --------------------------------------------------------------------------- #
 
 async def test_completion_close_posts_no_comment(tmp_path, store, monkeypatch):
     repo = _make_repo(tmp_path)
     sha = _git_out(repo, "rev-parse", "HEAD")
-    url = "https://github.com/o/r/pull/42"
+    url_landed = "https://github.com/o/r/pull/41"
+    url_superseded = "https://github.com/o/r/pull/42"
     calls = []
 
     def fake_run(argv, timeout=15):
@@ -339,10 +367,11 @@ async def test_completion_close_posts_no_comment(tmp_path, store, monkeypatch):
 
     monkeypatch.setattr(comment_poster, "_run", fake_run)
 
-    t = await _seed_awaiting(store, repo, url=url, pr_branch="")
+    t = await _seed_awaiting(store, repo, url=url_landed, pr_branch="")
+    await _add_superseded_pr(store, t, url_superseded)
     await approve_landed_override(store, t, sha, "no comment expected")
 
-    assert calls, "close_pr never shelled out"
+    assert calls, "close_pr never shelled out for the superseded PR"
     joined = [" ".join(a) for a in calls]
     assert not any("comment" in j or "note" in j or "-f body=" in j
                   for j in joined), calls
@@ -354,20 +383,24 @@ async def test_completion_close_posts_no_comment(tmp_path, store, monkeypatch):
 
 async def test_close_failure_does_not_undo_completion(tmp_path, store):
     repo = _make_repo(tmp_path)
-    sha = _git_out(repo, "rev-parse", "HEAD")
-    url = "https://github.com/o/r/pull/99"
+    url_landed = "https://github.com/o/r/pull/98"
+    url_superseded = "https://github.com/o/r/pull/99"
 
     def failing_close(url):
         return {"ok": False, "error": "403 forbidden"}
 
-    t = await _seed_awaiting(store, repo, url=url, pr_branch="")
+    t = await _seed_awaiting(store, repo, url=url_landed, pr_branch="")
+    await _add_superseded_pr(store, t, url_superseded)
 
     closed = await close_task_prs_on_completion(
         store, t, completion_path="approved_landed_override", close=failing_close)
 
+    # The superseded close failed; nothing closed, completion still stands.
     assert closed == []
-    events = await _pr_closed_events(store, t.id)
-    assert events == []
+    assert await _pr_closed_events(store, t.id) == []
+    # The landed PR is still recorded as left open regardless of the failure.
+    left = await _pr_left_open_events(store, t.id)
+    assert {e["pr_id"] for e in left} == {url_landed}
 
 
 async def test_close_failure_does_not_undo_completion_via_landed_override(
@@ -375,13 +408,15 @@ async def test_close_failure_does_not_undo_completion_via_landed_override(
 ):
     repo = _make_repo(tmp_path)
     sha = _git_out(repo, "rev-parse", "HEAD")
-    url = "https://github.com/o/r/pull/98"
+    url_landed = "https://github.com/o/r/pull/96"
+    url_superseded = "https://github.com/o/r/pull/97"
 
     monkeypatch.setattr(
         comment_poster, "close_pr",
         lambda url: {"ok": False, "error": "403 forbidden"})
 
-    t = await _seed_awaiting(store, repo, url=url, pr_branch="")
+    t = await _seed_awaiting(store, repo, url=url_landed, pr_branch="")
+    await _add_superseded_pr(store, t, url_superseded)
 
     await approve_landed_override(store, t, sha, "close will fail, must still complete")
 
