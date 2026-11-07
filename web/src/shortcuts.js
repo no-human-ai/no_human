@@ -9,14 +9,15 @@
 // does NOT also match those keys, or a single keystroke would double-fire.
 // What's left for the web layer itself to own is: the platform-standard ⌘,
 // for Settings (⌘4 already does the same job under the menu's own numbering,
-// but ⌘, is the shortcut users actually reach for out of habit) and ⌘/ to
+// but ⌘, is the shortcut users actually reach for out of habit), ⌘/ or ? to
 // open this cheat-sheet. Esc is NOT owned here — this module never acts on
 // it; every dialog that can be open (composer, drawer, Settings, the
 // cheat-sheet) closes itself on Escape via its own listener (useEscapeKey.js).
 // The cheat-sheet still LISTS Esc below ("Close dialog or drawer") because
 // that's true of every one of those dialogs individually. Browser (i.e.
-// non-Electron) keeps its one existing shortcut, bare "n", handled separately
-// by keyboardShortcut.js/shouldTriggerNewTask — it is not part of this map.
+// non-Electron) keeps its existing shortcut, bare "n", handled separately
+// by keyboardShortcut.js/shouldTriggerNewTask, plus bare "?" to open this
+// cheat-sheet.
 const EDITABLE = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 // The full list, for the cheat-sheet dialog. Includes shortcuts this module
@@ -28,7 +29,8 @@ export const SHORTCUTS = [
   { id: "page-backlog", keys: { mac: "⌘2", other: "Ctrl+2" }, label: "Backlog", when: "desktop" },
   { id: "page-stats", keys: { mac: "⌘3", other: "Ctrl+3" }, label: "Stats", when: "desktop" },
   { id: "settings", keys: { mac: "⌘4 or ⌘,", other: "Ctrl+4 or Ctrl+," }, label: "Settings", when: "desktop" },
-  { id: "help", keys: { mac: "⌘/", other: "Ctrl+/" }, label: "Keyboard shortcuts", when: "desktop" },
+  { id: "help", keys: { mac: "⌘/ or ?", other: "Ctrl+/ or ?" }, label: "Keyboard shortcuts", when: "desktop" },
+  { id: "help-browser", keys: { mac: "?", other: "?" }, label: "Keyboard shortcuts", when: "browser" },
   { id: "new-task-browser", keys: { mac: "n", other: "n" }, label: "New task", when: "browser" },
   { id: "close", keys: { mac: "Esc", other: "Esc" }, label: "Close dialog or drawer", when: "always" },
 ];
@@ -41,6 +43,7 @@ export function matchShortcut(e, { isDesktop } = {}) {
   if (!e) return null;
   const t = e.target;
   if (t && (EDITABLE.has(t.tagName) || t.isContentEditable)) return null;
+  if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) return "help";
   if (!isDesktop) return null;
   if ((e.metaKey || e.ctrlKey) && !e.altKey) return MOD[e.key] ?? null;
   return null;

@@ -67,3 +67,27 @@ test("SHORTCUTS lists real accelerators only — no page-done/page-failed placeh
     assert.ok(s.label, s.id);
   }
 });
+
+test("? opens the cheat-sheet in both desktop and browser", () => {
+  assert.equal(matchShortcut(ev("?"), { isDesktop: true }), "help");
+  assert.equal(matchShortcut(ev("?"), { isDesktop: false }), "help");
+});
+
+test("? with ctrl or meta or alt does not match", () => {
+  assert.equal(matchShortcut(ev("?", { metaKey: true }), { isDesktop: true }), null);
+  assert.equal(matchShortcut(ev("?", { ctrlKey: true }), { isDesktop: false }), null);
+  assert.equal(matchShortcut(ev("?", { altKey: true }), { isDesktop: true }), null);
+});
+
+test("typing ? in an editable field never opens the cheat-sheet", () => {
+  assert.equal(
+    matchShortcut({ ...ev("?"), target: { tagName: "INPUT" } }, { isDesktop: false }),
+    null);
+  assert.equal(
+    matchShortcut({ ...ev("?"), target: { tagName: "TEXTAREA" } }, { isDesktop: true }),
+    null);
+  assert.equal(
+    matchShortcut({ ...ev("?"), target: { tagName: "DIV", isContentEditable: true } }, { isDesktop: false }),
+    null);
+});
+
