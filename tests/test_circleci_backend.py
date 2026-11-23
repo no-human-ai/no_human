@@ -43,6 +43,29 @@ async def test_check_status_maps_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_check_status_branch_filtered_workflow_is_success(monkeypatch):
+    # A ran workflow passed while a branch-filtered one is `not_run`; CircleCI
+    # shows this pipeline as Success, so it must not demote to SKIPPED (which
+    # would make `passed` False and block an otherwise-green PR).
+    def get(url, headers):
+        return _Resp(200, {"items": [{"name": "build-test", "status": "success"},
+                                     {"name": "deploy", "status": "not_run"}]})
+    r = await _backend(monkeypatch, get=get).check_status("PID")
+    assert r.status is PipelineStatus.SUCCESS
+    assert r.passed is True
+
+
+@pytest.mark.asyncio
+async def test_check_status_all_not_run_is_skipped(monkeypatch):
+    # When nothing actually ran, the pipeline is genuinely skipped (not passed).
+    def get(url, headers):
+        return _Resp(200, {"items": [{"name": "deploy", "status": "not_run"}]})
+    r = await _backend(monkeypatch, get=get).check_status("PID")
+    assert r.status is PipelineStatus.SKIPPED
+    assert r.passed is False
+
+
+@pytest.mark.asyncio
 async def test_check_status_maps_failure(monkeypatch):
     def get(url, headers):
         return _Resp(200, {"items": [{"name": "build", "status": "success"},

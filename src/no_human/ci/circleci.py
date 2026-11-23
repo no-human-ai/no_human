@@ -48,10 +48,16 @@ def _aggregate(statuses: list[str]) -> PipelineStatus:
         return PipelineStatus.MANUAL
     if "canceled" in s:
         return PipelineStatus.CANCELED
-    if s <= {"success"}:
-        return PipelineStatus.SUCCESS
-    if "not_run" in s:
+    if s <= {"not_run"}:
+        # The whole pipeline was filtered out (branch/tag rules, a `when`
+        # condition): nothing actually ran, so the pipeline is skipped.
         return PipelineStatus.SKIPPED
+    if s <= {"success", "not_run"}:
+        # Ran workflows all passed; `not_run` workflows are neutral, not a
+        # failure and not pending (CircleCI's own UI shows such a pipeline as
+        # Success). Demoting this to SKIPPED would make `passed` False and
+        # block an otherwise-green PR whose deploy workflow is branch-filtered.
+        return PipelineStatus.SUCCESS
     return PipelineStatus.UNKNOWN
 
 
