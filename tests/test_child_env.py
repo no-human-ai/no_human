@@ -36,6 +36,11 @@ def test_secret_shape_is_name_based_and_case_insensitive():
     assert is_secret_env_name("SSH_AUTH_SOCK")
     assert not is_secret_env_name("PATH")
     assert not is_secret_env_name("GIT_ASKPASS")  # "ASKPASS" is not PASSWORD/PASSWD
+    # A passphrase is a credential too (GPG/SSH-key/backup borg/restic/age) and
+    # none of the other markers catch `*_PASSPHRASE`.
+    assert is_secret_env_name("GPG_PASSPHRASE")
+    assert is_secret_env_name("ssh_key_passphrase")
+    assert is_foreign_secret("BORG_PASSPHRASE", CLAUDE_CHILD_KEEP, "x")
 
 
 def test_keep_list_is_case_insensitive_like_the_shape_test():
