@@ -35,7 +35,10 @@ from collections.abc import Iterable, Mapping, MutableMapping
 # Env-var NAME shapes that mark a value as a credential, matched
 # case-insensitively as substrings.
 _SECRET_NAME_MARKERS = (
-    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "API_KEY",
+    # `PASSPHRASE` sits beside `PASSWORD`/`PASSWD`: a GPG, SSH-key or backup
+    # (borg/restic/age) passphrase is a credential a developer's shell commonly
+    # exports, and none of the other markers catch `*_PASSPHRASE`.
+    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "APIKEY", "API_KEY",
     "ACCESS_KEY", "PRIVATE_KEY", "CREDENTIAL", "AUTH_TOKEN", "SESSION_KEY",
     "SIGNING_KEY", "ENCRYPTION_KEY", "WEBHOOK",
 )
